@@ -82,5 +82,113 @@
     "dmPolicy": { "label": "DM Policy" },
     "allowFrom": { "label": "Allowed Numbers" },
     "sendReadReceipts": { "label": "Send Read Receipts" }
+  },
+  "channelConfigs": {
+    "whatsapp-cloud": {
+      "label": "WhatsApp Cloud API",
+      "description": "WhatsApp channel using Meta's official Cloud API.",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "name": { "type": "string" },
+          "phoneNumberId": {
+            "type": "string",
+            "description": "WhatsApp Phone Number ID from Meta Business dashboard"
+          },
+          "businessAccountId": {
+            "type": "string",
+            "description": "WhatsApp Business Account ID"
+          },
+          "accessToken": {
+            "isSecret": true,
+            "description": "Permanent access token (System User token recommended)",
+            "anyOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "properties": {
+                  "source": { "type": "string", "enum": ["env", "file", "exec", "store"] },
+                  "provider": { "type": "string" },
+                  "id": { "type": "string" }
+                },
+                "required": ["source", "provider", "id"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "appSecret": {
+            "isSecret": true,
+            "description": "Meta App Secret for webhook signature verification",
+            "anyOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "properties": {
+                  "source": { "type": "string", "enum": ["env", "file", "exec", "store"] },
+                  "provider": { "type": "string" },
+                  "id": { "type": "string" }
+                },
+                "required": ["source", "provider", "id"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "verifyToken": {
+            "type": "string",
+            "description": "Custom token for webhook endpoint verification",
+            "default": "openclaw-wa-cloud-verify"
+          },
+          "webhookPort": {
+            "type": "number",
+            "description": "Port for the webhook HTTP server",
+            "default": 3100
+          },
+          "webhookPath": {
+            "type": "string",
+            "description": "URL path for the webhook endpoint",
+            "default": "/webhook/whatsapp-cloud"
+          },
+          "apiVersion": {
+            "type": "string",
+            "description": "Meta Graph API version",
+            "default": "v21.0"
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "allowlist"],
+            "default": "open",
+            "description": "Access control: open (anyone) or allowlist (only allowFrom numbers)"
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "E.164 phone numbers allowed to message the bot (when dmPolicy=allowlist)"
+          },
+          "sendReadReceipts": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically mark incoming messages as read"
+          }
+        },
+        "required": []
+      },
+      "uiHints": {
+        "phoneNumberId": { "label": "Phone Number ID", "placeholder": "123456789012345" },
+        "businessAccountId": { "label": "Business Account ID", "placeholder": "123456789012345" },
+        "accessToken": { "label": "Access Token", "sensitive": true },
+        "appSecret": { "label": "App Secret", "sensitive": true },
+        "verifyToken": { "label": "Webhook Verify Token" },
+        "webhookPort": { "label": "Webhook Port", "placeholder": "3100" },
+        "webhookPath": { "label": "Webhook Path", "placeholder": "/webhook/whatsapp-cloud" },
+        "apiVersion": { "label": "API Version", "placeholder": "v21.0" },
+        "dmPolicy": { "label": "DM Policy" },
+        "allowFrom": { "label": "Allowed Numbers" },
+        "sendReadReceipts": { "label": "Send Read Receipts" }
+      }
+    }
   }
 }
