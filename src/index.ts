@@ -207,6 +207,10 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     dmPolicy: raw.dmPolicy ?? CONFIG_DEFAULTS.dmPolicy!,
     allowFrom: raw.allowFrom ?? CONFIG_DEFAULTS.allowFrom!,
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
+    suppressServiceNotices: raw.suppressServiceNotices ?? CONFIG_DEFAULTS.suppressServiceNotices!,
+    ...(typeof raw.serviceNoticeReplacement === "string"
+      ? { serviceNoticeReplacement: raw.serviceNoticeReplacement }
+      : {}),
     _rawAccessToken: raw.accessToken,
     _rawAppSecret: raw.appSecret,
   };

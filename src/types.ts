@@ -32,6 +32,17 @@ export interface WhatsAppCloudConfig {
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
   sendReadReceipts: boolean;
+  /**
+   * When true (default), OpenClaw's own service/fallback notices (for example
+   * "⚠️ OpenClaw couldn't produce or deliver a reply...") are never relayed to the
+   * WhatsApp user. Set false to let them through. See isServiceNotice() in api.ts.
+   */
+  suppressServiceNotices: boolean;
+  /**
+   * Optional user-facing text sent in place of a suppressed service notice. When
+   * unset, the notice is dropped silently (no message reaches the user).
+   */
+  serviceNoticeReplacement?: string;
   /** Raw accessToken value as configured (string or SecretRef) before resolution. */
   _rawAccessToken?: SecretInput;
   /** Raw appSecret value as configured (string or SecretRef) before resolution. */
@@ -48,6 +59,7 @@ export const CONFIG_DEFAULTS: Partial<WhatsAppCloudConfig> = {
   dmPolicy: "open",
   allowFrom: [],
   sendReadReceipts: true,
+  suppressServiceNotices: true,
 };
 
 // ---------------------------------------------------------------------------

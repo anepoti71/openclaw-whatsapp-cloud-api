@@ -6,7 +6,7 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 // Import after mocking
-import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl } from "../api.js";
+import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl, isServiceNotice } from "../api.js";
 
 const mockLog = {
   info: vi.fn(),
@@ -29,6 +29,7 @@ function makeConfig(): WhatsAppCloudConfig {
     dmPolicy: "open",
     allowFrom: [],
     sendReadReceipts: true,
+    suppressServiceNotices: true,
   };
 }
 
@@ -116,6 +117,78 @@ describe("sendText", () => {
 
     expect(result.ok).toBe(true);
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+const FALLBACK_NOTICE =
+  "⚠️ OpenClaw couldn't produce or deliver a reply. Please try again. If this keeps happening, ask the operator to check the gateway logs.";
+
+describe("isServiceNotice", () => {
+  it("matches the no-visible-reply fallback (with and without a run reference)", () => {
+    expect(isServiceNotice(FALLBACK_NOTICE)).toBe(true);
+    expect(isServiceNotice(`${FALLBACK_NOTICE} Reference: abc123.`)).toBe(true);
+  });
+
+  it("matches the queue-cap rejection notice", () => {
+    expect(
+      isServiceNotice("This message was not queued because the session queue is full. Please try again later.")
+    ).toBe(true);
+  });
+
+  it("does not match a normal agent reply", () => {
+    expect(isServiceNotice("Ciao! Come posso aiutarti?")).toBe(false);
+    expect(isServiceNotice("⚠️ Attenzione: la ricetta richiede 20 minuti.")).toBe(false);
+  });
+});
+
+describe("sendText service-notice suppression", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("drops a service notice without calling the API (default)", async () => {
+    const config = makeConfig(); // suppressServiceNotices: true
+
+    const result = await sendText(config, "393491234567", FALLBACK_NOTICE, mockLog);
+
+    expect(result.ok).toBe(true);
+    expect(result.messageId).toBe("suppressed-service-notice");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("relays the notice when suppression is disabled", async () => {
+    const config = { ...makeConfig(), suppressServiceNotices: false };
+    mockApiSuccess();
+
+    const result = await sendText(config, "393491234567", FALLBACK_NOTICE, mockLog);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.text.body).toBe(FALLBACK_NOTICE);
+  });
+
+  it("sends the configured replacement text instead of the notice", async () => {
+    const config = {
+      ...makeConfig(),
+      serviceNoticeReplacement: "Un momento, riprova tra poco 🙏",
+    };
+    mockApiSuccess();
+
+    const result = await sendText(config, "393491234567", FALLBACK_NOTICE, mockLog);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.text.body).toBe("Un momento, riprova tra poco 🙏");
+  });
+
+  it("never suppresses a normal agent reply", async () => {
+    const config = makeConfig();
+    mockApiSuccess();
+
+    const result = await sendText(config, "393491234567", "Ecco la risposta.", mockLog);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledOnce();
   });
 });
 

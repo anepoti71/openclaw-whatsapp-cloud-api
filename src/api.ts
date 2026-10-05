@@ -67,6 +67,29 @@ async function sendRequest(
 }
 
 // ---------------------------------------------------------------------------
+// Service-notice suppression
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable leading markers of OpenClaw's own service/fallback notices. These are
+ * emitted by the core auto-reply dispatcher (not by the agent) when a turn fails
+ * to produce a visible reply or the session queue is full, and they are plain
+ * text by the time they reach this channel's outbound. We match on a stable
+ * prefix so a trailing "Reference: <runId>." or minor wording changes still hit.
+ * Keep entries generic (no engagement/client specifics) and easy to extend.
+ */
+const SERVICE_NOTICE_PREFIXES: readonly string[] = [
+  "⚠️ OpenClaw couldn't produce or deliver a reply",
+  "This message was not queued because the session queue is full",
+];
+
+/** True when `text` is an OpenClaw service/fallback notice, not an agent reply. */
+export function isServiceNotice(text: string): boolean {
+  const trimmed = text.trimStart();
+  return SERVICE_NOTICE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+// ---------------------------------------------------------------------------
 // Text messages
 // ---------------------------------------------------------------------------
 
@@ -76,6 +99,20 @@ export async function sendText(
   text: string,
   log: Logger
 ): Promise<SendResult> {
+  // Never relay OpenClaw's own service/fallback notices to the user unless the
+  // operator explicitly opted in (suppressServiceNotices === false). Returning
+  // ok makes the core dispatcher treat it as delivered, so it does not retry or
+  // escalate. When a replacement is configured, send that friendlier text instead.
+  if (config.suppressServiceNotices !== false && isServiceNotice(text)) {
+    const replacement = config.serviceNoticeReplacement?.trim();
+    if (!replacement) {
+      log.info?.("[whatsapp-cloud] Suppressed OpenClaw service notice (not relayed to user)");
+      return { ok: true, messageId: "suppressed-service-notice" };
+    }
+    log.info?.("[whatsapp-cloud] Replaced OpenClaw service notice with configured text");
+    text = replacement;
+  }
+
   // WhatsApp has a 4096 character limit per text message
   // Split long messages into chunks
   const chunks = splitMessage(text, 4096);

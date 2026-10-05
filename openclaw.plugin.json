@@ -5,7 +5,7 @@
     { "name": "whatsapp-cloud", "description": "WhatsApp Cloud API channel management", "hasSubcommands": true }
   ],
   "name": "WhatsApp Cloud API",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "WhatsApp channel using Meta's official Cloud API. Production-safe for business use — no Baileys, no ban risk.",
   "author": "Baia Digitale SRL",
   "license": "MIT",
@@ -69,6 +69,15 @@
         "type": "boolean",
         "default": true,
         "description": "Automatically mark incoming messages as read"
+      },
+      "suppressServiceNotices": {
+        "type": "boolean",
+        "default": true,
+        "description": "Never relay OpenClaw's own service/fallback notices (e.g. 'couldn't produce or deliver a reply') to the WhatsApp user. Set false to let them through."
+      },
+      "serviceNoticeReplacement": {
+        "type": "string",
+        "description": "Optional friendly text sent in place of a suppressed service notice. Leave empty to drop the notice silently."
       }
     },
     "required": []
@@ -84,7 +93,9 @@
     "apiVersion": { "label": "API Version", "placeholder": "v21.0" },
     "dmPolicy": { "label": "DM Policy" },
     "allowFrom": { "label": "Allowed Numbers" },
-    "sendReadReceipts": { "label": "Send Read Receipts" }
+    "sendReadReceipts": { "label": "Send Read Receipts" },
+    "suppressServiceNotices": { "label": "Suppress Service Notices" },
+    "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
   },
   "channelConfigs": {
     "whatsapp-cloud": {
@@ -175,6 +186,15 @@
             "type": "boolean",
             "default": true,
             "description": "Automatically mark incoming messages as read"
+          },
+          "suppressServiceNotices": {
+            "type": "boolean",
+            "default": true,
+            "description": "Never relay OpenClaw's own service/fallback notices (e.g. 'couldn't produce or deliver a reply') to the WhatsApp user. Set false to let them through."
+          },
+          "serviceNoticeReplacement": {
+            "type": "string",
+            "description": "Optional friendly text sent in place of a suppressed service notice. Leave empty to drop the notice silently."
           }
         },
         "required": []
@@ -190,7 +210,9 @@
         "apiVersion": { "label": "API Version", "placeholder": "v21.0" },
         "dmPolicy": { "label": "DM Policy" },
         "allowFrom": { "label": "Allowed Numbers" },
-        "sendReadReceipts": { "label": "Send Read Receipts" }
+        "sendReadReceipts": { "label": "Send Read Receipts" },
+        "suppressServiceNotices": { "label": "Suppress Service Notices" },
+        "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
       }
     }
   }
