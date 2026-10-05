@@ -12,6 +12,7 @@
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
 import { applyToneTag } from "./tone.js";
+import { saveInboundMedia } from "./media.js";
 import { startWebhookServer, handleWebhookRequest } from "./webhook.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
@@ -148,6 +149,32 @@ async function dispatchInbound(
       msgCtx.ReplyToId = message.quotedMessageId;
     }
 
+    // Download inbound media (voice notes, images, video, documents) and attach
+    // it so OpenClaw's media-understanding transcribes audio / reads images
+    // during the turn. WhatsApp media needs the access token to fetch, so the
+    // channel must download it; OpenClaw cannot reach graph.facebook.com itself.
+    if (config.downloadInboundMedia !== false && message.media?.id) {
+      const fact = await saveInboundMedia(
+        config,
+        { id: message.media.id, mimeType: message.media.mimeType, filename: message.media.filename },
+        message.messageId,
+        log
+      );
+      if (fact) {
+        msgCtx.media = [fact];
+        // Drop the bare placeholder so the transcript/understanding drives the
+        // turn; keep a real caption (image/video) as the body.
+        if (fact.kind === "audio" && message.media.caption == null) {
+          msgCtx.Body = message.media.caption ?? "";
+          msgCtx.RawBody = msgCtx.Body;
+          msgCtx.CommandBody = msgCtx.Body;
+          msgCtx.BodyForCommands = msgCtx.Body;
+        }
+      } else {
+        log.warn(`[whatsapp-cloud] Could not fetch inbound media ${message.media.id}; delivering placeholder text`);
+      }
+    }
+
     // Dispatch via OpenClaw's reply system
     await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: msgCtx,
@@ -212,6 +239,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     dmPolicy: raw.dmPolicy ?? CONFIG_DEFAULTS.dmPolicy!,
     allowFrom: raw.allowFrom ?? CONFIG_DEFAULTS.allowFrom!,
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
+    downloadInboundMedia: raw.downloadInboundMedia ?? CONFIG_DEFAULTS.downloadInboundMedia!,
     suppressServiceNotices: raw.suppressServiceNotices ?? CONFIG_DEFAULTS.suppressServiceNotices!,
     ...(typeof raw.serviceNoticeReplacement === "string"
       ? { serviceNoticeReplacement: raw.serviceNoticeReplacement }
@@ -906,6 +934,7 @@ export default plugin;
 export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia } from "./api.js";
 export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia } from "./api.js";
 export { extractToneTag, applyToneTag, persistTonePreference, clearTonePreference, resolveTonePrefsDir } from "./tone.js";
+export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir } from "./media.js";
 export { runSetupWizard, validateConfig } from "./setup.js";
 export type { WhatsAppCloudConfig } from "./types.js";
 export type { ParsedInboundMessage, ParsedInboundMessage as InboundMessage } from "./webhook.js";

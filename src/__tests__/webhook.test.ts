@@ -24,6 +24,7 @@ function makeConfig(overrides: Partial<WhatsAppCloudConfig> = {}): WhatsAppCloud
     dmPolicy: "open",
     allowFrom: [],
     sendReadReceipts: false, // disable in tests to avoid API calls
+    downloadInboundMedia: true,
     suppressServiceNotices: true,
     ...overrides,
   };

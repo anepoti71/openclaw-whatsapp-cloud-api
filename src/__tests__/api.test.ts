@@ -29,6 +29,7 @@ function makeConfig(): WhatsAppCloudConfig {
     dmPolicy: "open",
     allowFrom: [],
     sendReadReceipts: true,
+    downloadInboundMedia: true,
     suppressServiceNotices: true,
   };
 }

@@ -33,6 +33,12 @@ export interface WhatsAppCloudConfig {
   allowFrom: string[];
   sendReadReceipts: boolean;
   /**
+   * When true (default), inbound media (voice notes, images, video, documents)
+   * is downloaded and attached to the agent turn so OpenClaw can transcribe
+   * audio and read images. Set false to deliver only placeholder text.
+   */
+  downloadInboundMedia: boolean;
+  /**
    * When true (default), OpenClaw's own service/fallback notices (for example
    * "⚠️ OpenClaw couldn't produce or deliver a reply...") are never relayed to the
    * WhatsApp user. Set false to let them through. See isServiceNotice() in api.ts.
@@ -59,6 +65,7 @@ export const CONFIG_DEFAULTS: Partial<WhatsAppCloudConfig> = {
   dmPolicy: "open",
   allowFrom: [],
   sendReadReceipts: true,
+  downloadInboundMedia: true,
   suppressServiceNotices: true,
 };
 

@@ -381,6 +381,7 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 | `dmPolicy` | string | `"open"` | `"open"` (anyone) or `"allowlist"` (restricted) |
 | `allowFrom` | string[] | `[]` | E.164 numbers allowed when dmPolicy=allowlist |
 | `sendReadReceipts` | boolean | `true` | Auto-mark incoming messages as read |
+| `downloadInboundMedia` | boolean | `true` | Download inbound media (voice notes, images, video, documents) and attach it so the agent can transcribe audio and read images |
 | `suppressServiceNotices` | boolean | `true` | Never relay OpenClaw's own service/fallback notices (e.g. "couldn't produce or deliver a reply") to the user. Set `false` to let them through |
 | `serviceNoticeReplacement` | string | — | Optional friendly text sent in place of a suppressed service notice. Leave empty to drop it silently |
 
@@ -411,6 +412,15 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 - Timing-safe comparison to prevent timing attacks
 - DM policy (open / allowlist)
 - Phone number normalization for allowlist matching
+
+### Inbound media understanding
+
+- **Voice notes are transcribed and images are read** (enabled by default). Inbound
+  media is downloaded from Meta with the access token and attached to the agent
+  turn, so OpenClaw's media-understanding transcribes audio and reads images,
+  video and documents. (The old Baileys channel transcribed voice notes; this
+  restores it on the Cloud API.) Requires an audio/vision model available to the
+  agent. Disable with `downloadInboundMedia: false` to deliver placeholder text only.
 
 ### Reliability
 
@@ -447,7 +457,7 @@ cd openclaw-whatsapp-cloud-api
 npm install
 
 npm run type-check    # TypeScript strict mode
-npm test              # 43 tests
+npm test              # 59 tests
 npm run dev           # Watch mode (auto-rebuild)
 
 # Link to OpenClaw for development

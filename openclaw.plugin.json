@@ -5,7 +5,7 @@
     { "name": "whatsapp-cloud", "description": "WhatsApp Cloud API channel management", "hasSubcommands": true }
   ],
   "name": "WhatsApp Cloud API",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "WhatsApp channel using Meta's official Cloud API. Production-safe for business use — no Baileys, no ban risk.",
   "author": "Alessandro Nepoti",
   "license": "MIT",
@@ -70,6 +70,11 @@
         "default": true,
         "description": "Automatically mark incoming messages as read"
       },
+      "downloadInboundMedia": {
+        "type": "boolean",
+        "default": true,
+        "description": "Download inbound media (voice notes, images, video, documents) and attach it so the agent can transcribe audio and read images. Set false for placeholder text only."
+      },
       "suppressServiceNotices": {
         "type": "boolean",
         "default": true,
@@ -94,6 +99,7 @@
     "dmPolicy": { "label": "DM Policy" },
     "allowFrom": { "label": "Allowed Numbers" },
     "sendReadReceipts": { "label": "Send Read Receipts" },
+    "downloadInboundMedia": { "label": "Download Inbound Media" },
     "suppressServiceNotices": { "label": "Suppress Service Notices" },
     "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
   },
@@ -187,6 +193,11 @@
             "default": true,
             "description": "Automatically mark incoming messages as read"
           },
+          "downloadInboundMedia": {
+            "type": "boolean",
+            "default": true,
+            "description": "Download inbound media (voice notes, images, video, documents) and attach it so the agent can transcribe audio and read images. Set false for placeholder text only."
+          },
           "suppressServiceNotices": {
             "type": "boolean",
             "default": true,
@@ -211,6 +222,7 @@
         "dmPolicy": { "label": "DM Policy" },
         "allowFrom": { "label": "Allowed Numbers" },
         "sendReadReceipts": { "label": "Send Read Receipts" },
+        "downloadInboundMedia": { "label": "Download Inbound Media" },
         "suppressServiceNotices": { "label": "Suppress Service Notices" },
         "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
       }
