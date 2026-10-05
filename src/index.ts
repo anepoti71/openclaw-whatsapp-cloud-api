@@ -60,6 +60,44 @@ function resolveAgentId(cfg: any): string {
 }
 
 /**
+ * Pick the agent and session key for an inbound DM. Delegates to OpenClaw's
+ * router so `bindings` (per-peer / per-channel) decide which agent answers and
+ * the session key follows `session.dmScope`. Falls back to the canonical
+ * per-channel-peer key on the single/"main" agent when the router is missing
+ * or cannot select an agent.
+ */
+export function resolveInboundRoute(
+  runtime: any,
+  cfg: any,
+  accountId: string,
+  from: string,
+  log?: Logger
+): { agentId: string; sessionKey: string } {
+  const peerId = from.startsWith("+") ? from : `+${from}`;
+  const resolveAgentRoute = runtime?.channel?.routing?.resolveAgentRoute;
+  if (typeof resolveAgentRoute === "function") {
+    try {
+      const route = resolveAgentRoute({
+        cfg,
+        channel: "whatsapp-cloud",
+        accountId,
+        peer: { kind: "direct", id: peerId },
+        // Core defaults dmScope to "main" (all DMs share one session); keep
+        // each sender isolated unless the config explicitly chooses otherwise.
+        ...(cfg?.session?.dmScope ? {} : { dmScope: "per-channel-peer" }),
+      });
+      if (route?.agentId && route?.sessionKey) {
+        return { agentId: route.agentId, sessionKey: route.sessionKey };
+      }
+    } catch (err) {
+      log?.warn?.(`[whatsapp-cloud] Agent route resolution failed, using fallback: ${err}`);
+    }
+  }
+  const agentId = resolveAgentId(cfg);
+  return { agentId, sessionKey: `agent:${agentId}:whatsapp-cloud:direct:${peerId}` };
+}
+
+/**
  * Dispatch one parsed inbound WhatsApp message into an OpenClaw agent session.
  * Pulls a fresh config for each message so credential/policy edits apply
  * without a restart.
@@ -81,16 +119,9 @@ async function dispatchInbound(
     // Load fresh config for dispatch
     const freshCfg = runtime.config.current();
 
-    // Canonical per-channel-peer session key, matching OpenClaw's own builder:
-    //   agent:<agentId>:<channel>:direct:<+e164peer>
-    // Must include the channel id ("whatsapp-cloud", NOT "whatsapp"), the
-    // "direct" peer-kind segment, and an E.164 peer with a leading "+".
-    // Getting this exact shape is what keeps each WhatsApp sender in its own
-    // session and prevents collisions with the built-in whatsapp channel's
-    // sessions for the same number.
-    const agentId = resolveAgentId(freshCfg);
-    const peerId = message.from.startsWith("+") ? message.from : `+${message.from}`;
-    const sessionKey = `agent:${agentId}:whatsapp-cloud:direct:${peerId}`;
+    // Route via OpenClaw bindings; the key is agent:<agentId>:whatsapp-cloud:direct:<+e164peer>
+    // under per-channel-peer, which keeps each sender in its own session.
+    const { sessionKey } = resolveInboundRoute(runtime, freshCfg, accountId, message.from, log);
 
     // Build MsgContext (OpenClaw's standard inbound message format)
     const msgCtx: Record<string, any> = {
