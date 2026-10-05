@@ -181,62 +181,53 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
   };
 }
 
-// Cache the SDK module import so the (potentially heavy) resolver module is
-// loaded at most once per process, never repeatedly on the hot path.
-let secretRefModulePromise: Promise<any> | null = null;
-function loadSecretRefModule(): Promise<any> {
-  if (!secretRefModulePromise) {
-    // Variable specifier so TypeScript does not resolve it at build time (no
-    // build-time dependency on the host SDK); resolves at runtime because the
-    // plugin executes inside the OpenClaw gateway process.
-    const spec = "openclaw/plugin-sdk/secret-ref-runtime";
-    secretRefModulePromise = import(spec).catch((err) => {
-      secretRefModulePromise = null; // allow retry on next call
-      throw err;
-    });
-  }
-  return secretRefModulePromise;
-}
-
-/** Resolve a single SecretRef via OpenClaw's secret resolver (loaded at runtime). */
-async function resolveSecretRef(ref: SecretRef, runtime: any, log?: Logger): Promise<string> {
-  try {
-    // Bound so a stuck import/resolution can never hang channel startup or a reply.
-    const timeout = new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error("secret resolution timed out")), 8000)
-    );
-    const work = (async () => {
-      const mod: any = await loadSecretRefModule();
-      const map: Map<string, unknown> = await mod.resolveSecretRefValues([ref], {
-        config: runtime?.config?.current?.() ?? {},
-        env: process.env,
-      });
-      const value = [...map.values()][0];
-      return typeof value === "string" ? value : "";
-    })();
-    return await Promise.race([work, timeout]);
-  } catch (err) {
-    log?.warn?.(`[whatsapp-cloud] Could not resolve SecretRef ${ref.id}: ${err}`);
-    return "";
-  }
-}
+/**
+ * Secret-target registry entries: declare accessToken/appSecret (under
+ * channels.whatsapp-cloud) as inline SecretInput fields so OpenClaw's own secret
+ * resolver reads a SecretRef, resolves it, and injects the plaintext value into
+ * the config snapshot BEFORE the channel reads it. This is the native path:
+ * exposed via the channel's `secrets` adapter (ChannelSecretsAdapter). No host
+ * SDK import is needed (it is not resolvable from the installed package path);
+ * these are plain data objects matching SecretTargetRegistryEntry.
+ */
+const SECRET_TARGET_REGISTRY_ENTRIES = [
+  {
+    id: "whatsapp-cloud.accessToken",
+    targetType: "whatsapp-cloud",
+    configFile: "openclaw.json",
+    pathPattern: "channels.whatsapp-cloud.accessToken",
+    secretShape: "secret_input",
+    expectedResolvedValue: "string",
+    includeInPlan: true,
+    includeInConfigure: true,
+    includeInAudit: true,
+  },
+  {
+    id: "whatsapp-cloud.appSecret",
+    targetType: "whatsapp-cloud",
+    configFile: "openclaw.json",
+    pathPattern: "channels.whatsapp-cloud.appSecret",
+    secretShape: "secret_input",
+    expectedResolvedValue: "string",
+    includeInPlan: true,
+    includeInConfigure: true,
+    includeInAudit: true,
+  },
+] as const;
 
 /**
- * Resolve any SecretRef-backed credential fields into plaintext on the given
- * config object (mutates it). No-op when the fields are already plaintext, so
- * plaintext config keeps working unchanged.
+ * Kept as a no-op: OpenClaw now resolves SecretRefs natively via the secret
+ * contract (SECRET_TARGET_REGISTRY_ENTRIES on the channel's `secrets` adapter),
+ * so by the time the channel reads config the secret fields are already
+ * plaintext. Previously this did a runtime SDK import that could stall channel
+ * startup; that path is removed.
  */
 async function ensureSecretsResolved(
-  config: WhatsAppCloudConfig,
-  runtime: any,
-  log?: Logger
+  _config: WhatsAppCloudConfig,
+  _runtime?: any,
+  _log?: Logger
 ): Promise<void> {
-  if (!config.accessToken && isSecretRef(config._rawAccessToken)) {
-    config.accessToken = await resolveSecretRef(config._rawAccessToken, runtime, log);
-  }
-  if (!config.appSecret && isSecretRef(config._rawAppSecret)) {
-    config.appSecret = await resolveSecretRef(config._rawAppSecret, runtime, log);
-  }
+  /* no-op: native resolution happens before the channel reads config */
 }
 
 /** True when a credential is set, either as plaintext or a SecretRef to resolve. */
@@ -278,6 +269,13 @@ const whatsappCloudChannel = {
   },
 
   onboarding: whatsappCloudOnboardingAdapter,
+
+  // Secret contract: tells OpenClaw which config fields are secrets so it
+  // resolves SecretRefs natively into the config snapshot before the channel
+  // reads them (also surfaces them to `secrets audit`/`configure`).
+  secrets: {
+    secretTargetRegistryEntries: SECRET_TARGET_REGISTRY_ENTRIES as unknown as any[],
+  },
 
   capabilities: {
     chatTypes: ["direct"] as Array<"direct">,
