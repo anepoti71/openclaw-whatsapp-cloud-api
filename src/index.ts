@@ -603,11 +603,12 @@ const whatsappCloudChannel = {
       lastError: null,
     },
 
+    // Receives the snapshots built by buildAccountSnapshot, not resolved accounts.
     collectStatusIssues: (accounts: any[]) => {
       const issues: any[] = [];
       for (const account of accounts) {
         const aid = account.accountId ?? DEFAULT_ACCOUNT_ID;
-        if (!account.config?.accessToken?.trim()) {
+        if (!account.hasAccessToken) {
           issues.push({
             channel: "whatsapp-cloud",
             accountId: aid,
@@ -615,7 +616,7 @@ const whatsappCloudChannel = {
             message: "WhatsApp Cloud API access token not configured",
           });
         }
-        if (!account.config?.phoneNumberId?.trim()) {
+        if (!account.hasPhoneNumberId) {
           issues.push({
             channel: "whatsapp-cloud",
             accountId: aid,
@@ -632,6 +633,8 @@ const whatsappCloudChannel = {
       name: account.name,
       enabled: account.enabled,
       configured: Boolean(account.config.accessToken?.trim() && account.config.phoneNumberId?.trim()),
+      hasAccessToken: Boolean(account.config.accessToken?.trim()),
+      hasPhoneNumberId: Boolean(account.config.phoneNumberId?.trim()),
       tokenSource: account.tokenSource,
       running: runtime?.running ?? (webhookServer?.listening ?? false),
       lastStartAt: runtime?.lastStartAt ?? null,
@@ -838,7 +841,15 @@ const plugin = {
               }
             });
         },
-        { commands: ["whatsapp-cloud"] }
+        {
+          descriptors: [
+            {
+              name: "whatsapp-cloud",
+              description: "WhatsApp Cloud API channel management",
+              hasSubcommands: true,
+            },
+          ],
+        }
       );
     }
 
