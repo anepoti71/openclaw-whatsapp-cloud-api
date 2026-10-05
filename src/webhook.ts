@@ -58,6 +58,41 @@ export type StatusUpdateHandler = (
 // Server
 // ---------------------------------------------------------------------------
 
+/**
+ * Handle a single webhook request (GET verification or POST events) without
+ * owning an HTTP server. Returns true if the request matched and was handled.
+ *
+ * This lets the plugin mount its webhook either on its own standalone server
+ * (startWebhookServer) or directly on the OpenClaw gateway's shared HTTP server
+ * via api.registerHttpRoute — so the same public tunnel (e.g. ngrok) that serves
+ * other channels also serves this webhook, with no extra port or tunnel.
+ */
+export async function handleWebhookRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: WhatsAppCloudConfig,
+  onMessage: InboundMessageHandler,
+  onStatus: StatusUpdateHandler | undefined,
+  log: Logger
+): Promise<boolean> {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  const path = url.pathname;
+
+  // ----- Webhook verification (GET) -----
+  if (req.method === "GET" && path === config.webhookPath) {
+    handleVerification(url, config, res, log);
+    return true;
+  }
+
+  // ----- Incoming webhook events (POST) -----
+  if (req.method === "POST" && path === config.webhookPath) {
+    await handleIncoming(req, res, config, onMessage, onStatus, log);
+    return true;
+  }
+
+  return false;
+}
+
 export function startWebhookServer(
   config: WhatsAppCloudConfig,
   onMessage: InboundMessageHandler,
@@ -68,15 +103,8 @@ export function startWebhookServer(
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const path = url.pathname;
 
-    // ----- Webhook verification (GET) -----
-    if (req.method === "GET" && path === config.webhookPath) {
-      handleVerification(url, config, res, log);
-      return;
-    }
-
-    // ----- Incoming webhook events (POST) -----
-    if (req.method === "POST" && path === config.webhookPath) {
-      await handleIncoming(req, res, config, onMessage, onStatus, log);
+    // ----- WhatsApp webhook (GET verification + POST events) -----
+    if (await handleWebhookRequest(req, res, config, onMessage, onStatus, log)) {
       return;
     }
 
@@ -97,7 +125,7 @@ export function startWebhookServer(
     );
   });
 
-  server.on("error", (err) => {
+  server.on("error", (err: Error) => {
     log.error(`[whatsapp-cloud] Webhook server error: ${err.message}`);
   });
 

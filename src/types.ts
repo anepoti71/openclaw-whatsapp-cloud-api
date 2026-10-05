@@ -2,12 +2,28 @@
 // WhatsApp Cloud API — Type Definitions
 // ---------------------------------------------------------------------------
 
+/**
+ * A reference to a value held in OpenClaw's secret store instead of plaintext.
+ * Mirrors OpenClaw's SecretRef shape, e.g.
+ *   { source: "store", provider: "default", id: "WHATSAPP_CLOUD_ACCESS_TOKEN" }
+ */
+export interface SecretRef {
+  source: "env" | "file" | "exec" | "store";
+  provider: string;
+  id: string;
+}
+
+/** A secret config value: either a literal string or a SecretRef. */
+export type SecretInput = string | SecretRef;
+
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
 export interface WhatsAppCloudConfig {
   enabled: boolean;
   phoneNumberId: string;
   businessAccountId: string;
+  /** Resolved access token (empty until SecretRefs are resolved; see _rawAccessToken). */
   accessToken: string;
+  /** Resolved app secret (empty until SecretRefs are resolved; see _rawAppSecret). */
   appSecret: string;
   verifyToken: string;
   webhookPort: number;
@@ -16,6 +32,10 @@ export interface WhatsAppCloudConfig {
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
   sendReadReceipts: boolean;
+  /** Raw accessToken value as configured (string or SecretRef) before resolution. */
+  _rawAccessToken?: SecretInput;
+  /** Raw appSecret value as configured (string or SecretRef) before resolution. */
+  _rawAppSecret?: SecretInput;
 }
 
 /** Defaults applied when config values are missing */

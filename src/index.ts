@@ -11,10 +11,11 @@
 
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
-import { startWebhookServer } from "./webhook.js";
+import { startWebhookServer, handleWebhookRequest } from "./webhook.js";
+import type { ParsedInboundMessage } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
-import type { WhatsAppCloudConfig, Logger } from "./types.js";
+import type { WhatsAppCloudConfig, Logger, SecretRef } from "./types.js";
 import { CONFIG_DEFAULTS } from "./types.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
 
@@ -33,13 +34,129 @@ interface ResolvedWhatsAppCloudAccount {
 
 // Runtime state
 let webhookServer: Server | null = null;
+// True when the webhook is mounted on the gateway's shared HTTP server
+// (via api.registerHttpRoute) instead of a standalone server on webhookPort.
+let gatewayRouteMounted = false;
 
 // Default account ID constant (matches OpenClaw convention)
 const DEFAULT_ACCOUNT_ID = "default";
 
 // ---------------------------------------------------------------------------
+// Inbound dispatch — shared by the standalone server and the gateway route
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the agent id to route inbound messages to. Uses the single configured
+ * agent when there is exactly one, otherwise falls back to "main" (OpenClaw's
+ * default agent id). The canonical session key embeds this as its first segment.
+ */
+function resolveAgentId(cfg: any): string {
+  const entries = cfg?.agents?.entries;
+  if (entries && typeof entries === "object") {
+    const ids = Object.keys(entries);
+    if (ids.length === 1) return ids[0];
+  }
+  return "main";
+}
+
+/**
+ * Dispatch one parsed inbound WhatsApp message into an OpenClaw agent session.
+ * Pulls a fresh config for each message so credential/policy edits apply
+ * without a restart.
+ */
+async function dispatchInbound(
+  message: ParsedInboundMessage,
+  config: WhatsAppCloudConfig,
+  runtime: any,
+  accountId: string,
+  log: Logger
+): Promise<void> {
+  try {
+    // Resolve any SecretRef-backed credentials before using them
+    await ensureSecretsResolved(config, runtime);
+
+    // Show typing indicator immediately (auto-dismissed on reply or after 25s)
+    sendTypingIndicator(config, message.messageId, log).catch(() => {});
+
+    // Load fresh config for dispatch
+    const freshCfg = runtime.config.current();
+
+    // Canonical per-channel-peer session key, matching OpenClaw's own builder:
+    //   agent:<agentId>:<channel>:direct:<+e164peer>
+    // Must include the channel id ("whatsapp-cloud", NOT "whatsapp"), the
+    // "direct" peer-kind segment, and an E.164 peer with a leading "+".
+    // Getting this exact shape is what keeps each WhatsApp sender in its own
+    // session and prevents collisions with the built-in whatsapp channel's
+    // sessions for the same number.
+    const agentId = resolveAgentId(freshCfg);
+    const peerId = message.from.startsWith("+") ? message.from : `+${message.from}`;
+    const sessionKey = `agent:${agentId}:whatsapp-cloud:direct:${peerId}`;
+
+    // Build MsgContext (OpenClaw's standard inbound message format)
+    const msgCtx: Record<string, any> = {
+      Body: message.text,
+      RawBody: message.text,
+      CommandBody: message.text,
+      BodyForCommands: message.text,
+      From: message.from,
+      To: config.phoneNumberId,
+      SessionKey: sessionKey,
+      AccountId: accountId,
+      MessageSid: message.messageId,
+      ChatType: "direct",
+      SenderName: message.senderName,
+      SenderId: message.from,
+      Provider: "whatsapp-cloud",
+      OriginatingChannel: "whatsapp-cloud",
+      OriginatingTo: message.from,
+      Timestamp: parseInt(message.timestamp, 10) * 1000,
+    };
+
+    if (message.quotedMessageId) {
+      msgCtx.ReplyToId = message.quotedMessageId;
+    }
+
+    // Dispatch via OpenClaw's reply system
+    await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: msgCtx,
+      cfg: freshCfg,
+      dispatcherOptions: {
+        deliver: async (payload: any) => {
+          if (payload.text) {
+            await sendText(config, message.from, payload.text, log);
+          }
+          if (payload.mediaUrl) {
+            await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);
+          }
+          if (payload.mediaUrls?.length) {
+            for (const url of payload.mediaUrls) {
+              await sendMedia(config, message.from, "image", { link: url }, log);
+            }
+          }
+        },
+        onReplyStart: () => {
+          log.info?.(`[whatsapp-cloud] Generating reply for ${message.senderName} (${message.from})`);
+        },
+      },
+    });
+  } catch (err) {
+    log.error(`[whatsapp-cloud] Failed to dispatch inbound message: ${err}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Config resolution
 // ---------------------------------------------------------------------------
+
+/** True when a value is a SecretRef object rather than a literal string. */
+function isSecretRef(value: unknown): value is SecretRef {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as any).id === "string" &&
+    typeof (value as any).source === "string"
+  );
+}
 
 function resolveConfig(cfg: any): WhatsAppCloudConfig {
   const raw = cfg?.channels?.["whatsapp-cloud"] ?? cfg ?? {};
@@ -47,8 +164,11 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     enabled: raw.enabled ?? CONFIG_DEFAULTS.enabled ?? true,
     phoneNumberId: String(raw.phoneNumberId ?? ""),
     businessAccountId: String(raw.businessAccountId ?? ""),
-    accessToken: String(raw.accessToken ?? ""),
-    appSecret: String(raw.appSecret ?? ""),
+    // Secret fields: keep a plaintext string as-is; leave empty when a SecretRef
+    // is configured (resolved later by ensureSecretsResolved) and stash the raw
+    // value so the resolver can read it.
+    accessToken: typeof raw.accessToken === "string" ? raw.accessToken : "",
+    appSecret: typeof raw.appSecret === "string" ? raw.appSecret : "",
     verifyToken: String(raw.verifyToken ?? CONFIG_DEFAULTS.verifyToken!),
     webhookPort: Number(raw.webhookPort ?? CONFIG_DEFAULTS.webhookPort!),
     webhookPath: String(raw.webhookPath ?? CONFIG_DEFAULTS.webhookPath!),
@@ -56,7 +176,72 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     dmPolicy: raw.dmPolicy ?? CONFIG_DEFAULTS.dmPolicy!,
     allowFrom: raw.allowFrom ?? CONFIG_DEFAULTS.allowFrom!,
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
+    _rawAccessToken: raw.accessToken,
+    _rawAppSecret: raw.appSecret,
   };
+}
+
+// Cache the SDK module import so the (potentially heavy) resolver module is
+// loaded at most once per process, never repeatedly on the hot path.
+let secretRefModulePromise: Promise<any> | null = null;
+function loadSecretRefModule(): Promise<any> {
+  if (!secretRefModulePromise) {
+    // Variable specifier so TypeScript does not resolve it at build time (no
+    // build-time dependency on the host SDK); resolves at runtime because the
+    // plugin executes inside the OpenClaw gateway process.
+    const spec = "openclaw/plugin-sdk/secret-ref-runtime";
+    secretRefModulePromise = import(spec).catch((err) => {
+      secretRefModulePromise = null; // allow retry on next call
+      throw err;
+    });
+  }
+  return secretRefModulePromise;
+}
+
+/** Resolve a single SecretRef via OpenClaw's secret resolver (loaded at runtime). */
+async function resolveSecretRef(ref: SecretRef, runtime: any, log?: Logger): Promise<string> {
+  try {
+    // Bound so a stuck import/resolution can never hang channel startup or a reply.
+    const timeout = new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error("secret resolution timed out")), 8000)
+    );
+    const work = (async () => {
+      const mod: any = await loadSecretRefModule();
+      const map: Map<string, unknown> = await mod.resolveSecretRefValues([ref], {
+        config: runtime?.config?.current?.() ?? {},
+        env: process.env,
+      });
+      const value = [...map.values()][0];
+      return typeof value === "string" ? value : "";
+    })();
+    return await Promise.race([work, timeout]);
+  } catch (err) {
+    log?.warn?.(`[whatsapp-cloud] Could not resolve SecretRef ${ref.id}: ${err}`);
+    return "";
+  }
+}
+
+/**
+ * Resolve any SecretRef-backed credential fields into plaintext on the given
+ * config object (mutates it). No-op when the fields are already plaintext, so
+ * plaintext config keeps working unchanged.
+ */
+async function ensureSecretsResolved(
+  config: WhatsAppCloudConfig,
+  runtime: any,
+  log?: Logger
+): Promise<void> {
+  if (!config.accessToken && isSecretRef(config._rawAccessToken)) {
+    config.accessToken = await resolveSecretRef(config._rawAccessToken, runtime, log);
+  }
+  if (!config.appSecret && isSecretRef(config._rawAppSecret)) {
+    config.appSecret = await resolveSecretRef(config._rawAppSecret, runtime, log);
+  }
+}
+
+/** True when a credential is set, either as plaintext or a SecretRef to resolve. */
+function hasCredential(resolved: string, raw: unknown): boolean {
+  return Boolean(resolved) || isSecretRef(raw);
 }
 
 function resolveAccount(cfg: any, accountId?: string | null): ResolvedWhatsAppCloudAccount {
@@ -174,6 +359,7 @@ const whatsappCloudChannel = {
     normalizeAllowEntry: (entry: string) => entry.replace(/[^0-9]/g, ""),
     notifyApproval: async ({ cfg, id }: { cfg: any; id: string }) => {
       const config = resolveConfig(cfg);
+      await ensureSecretsResolved(config, getWhatsAppCloudRuntime());
       if (!config.accessToken) {
         throw new Error("WhatsApp Cloud access token not configured");
       }
@@ -229,6 +415,7 @@ const whatsappCloudChannel = {
     }) => {
       const config = resolveConfig(cfg);
       const log: Logger = getWhatsAppCloudRuntime()?.logging?.getChildLogger?.({ channel: "whatsapp-cloud" }) ?? console as unknown as Logger;
+      await ensureSecretsResolved(config, getWhatsAppCloudRuntime());
 
       if (!config.accessToken || !config.phoneNumberId) {
         throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
@@ -256,6 +443,7 @@ const whatsappCloudChannel = {
     }) => {
       const config = resolveConfig(cfg);
       const log: Logger = getWhatsAppCloudRuntime()?.logging?.getChildLogger?.({ channel: "whatsapp-cloud" }) ?? console as unknown as Logger;
+      await ensureSecretsResolved(config, getWhatsAppCloudRuntime());
 
       if (!config.accessToken || !config.phoneNumberId) {
         throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
@@ -299,91 +487,46 @@ const whatsappCloudChannel = {
         return;
       }
 
-      // Validate config
-      const validation = validateConfig(config);
-      if (!validation.valid) {
-        for (const err of validation.errors) {
-          log.error(`[whatsapp-cloud] Config error: ${err}`);
-        }
+      // Resolve SecretRef-backed credentials (accessToken/appSecret). Bounded by
+      // a timeout so a slow/stuck resolver can never hang channel startup; if a
+      // ref is configured but not yet resolved here, the send/HMAC paths resolve
+      // it lazily per request.
+      await ensureSecretsResolved(config, runtime, log);
+
+      // Require credentials to be PRESENT (plaintext or a SecretRef); do not
+      // hard-fail on an as-yet-unresolved ref so the webhook can still bind.
+      if (!hasCredential(config.accessToken, config._rawAccessToken) || !config.phoneNumberId) {
+        log.error("[whatsapp-cloud] Not configured: missing accessToken or phoneNumberId");
         log.error("[whatsapp-cloud] Run 'openclaw channels login whatsapp-cloud' to configure");
         return;
       }
-      for (const warn of validation.warnings) {
+      if (!config.accessToken && isSecretRef(config._rawAccessToken)) {
+        log.warn("[whatsapp-cloud] accessToken SecretRef not resolved at startup; will retry per request");
+      }
+      for (const warn of validateConfig(config).warnings) {
         log.warn(`[whatsapp-cloud] ${warn}`);
       }
 
-      // Start the webhook HTTP server
-      webhookServer = startWebhookServer(
-        config,
-        // Inbound message handler — dispatch into OpenClaw agent session
-        async (message) => {
-          try {
-            // Show typing indicator immediately (auto-dismissed on reply or after 25s)
-            sendTypingIndicator(config, message.messageId, log).catch(() => {});
+      // If the webhook is already mounted on the gateway's shared HTTP server
+      // (via api.registerHttpRoute in register()), do NOT open a standalone
+      // server — the gateway route handles inbound events on the public tunnel.
+      if (gatewayRouteMounted) {
+        log.info("[whatsapp-cloud] Channel started (webhook mounted on gateway HTTP server)");
+        log.info(`[whatsapp-cloud]   Webhook path: ${config.webhookPath} (served by gateway + public origin)`);
+      } else {
+        // Fallback: standalone webhook HTTP server on webhookPort
+        webhookServer = startWebhookServer(
+          config,
+          (message) => dispatchInbound(message, config, runtime, account.accountId, log),
+          (messageId, status, recipientId) => {
+            log.debug?.(`[whatsapp-cloud] Status: ${status} for message ${messageId} to ${recipientId}`);
+          },
+          log
+        );
+        log.info("[whatsapp-cloud] Channel started (standalone webhook server)");
+        log.info(`[whatsapp-cloud]   Webhook: http://localhost:${config.webhookPort}${config.webhookPath}`);
+      }
 
-            // Load fresh config for dispatch
-            const freshCfg = await runtime.config.loadConfig();
-
-            // Build MsgContext (OpenClaw's standard inbound message format)
-            const msgCtx: Record<string, any> = {
-              Body: message.text,
-              RawBody: message.text,
-              CommandBody: message.text,
-              BodyForCommands: message.text,
-              From: message.from,
-              To: config.phoneNumberId,
-              SessionKey: `whatsapp-cloud:${message.from}`,
-              AccountId: account.accountId,
-              MessageSid: message.messageId,
-              ChatType: "direct",
-              SenderName: message.senderName,
-              SenderId: message.from,
-              Provider: "whatsapp-cloud",
-              OriginatingChannel: "whatsapp-cloud",
-              OriginatingTo: message.from,
-              Timestamp: parseInt(message.timestamp, 10) * 1000,
-            };
-
-            if (message.quotedMessageId) {
-              msgCtx.ReplyToId = message.quotedMessageId;
-            }
-
-            // Dispatch via OpenClaw's reply system
-            await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-              ctx: msgCtx,
-              cfg: freshCfg,
-              dispatcherOptions: {
-                deliver: async (payload: any) => {
-                  if (payload.text) {
-                    await sendText(config, message.from, payload.text, log);
-                  }
-                  if (payload.mediaUrl) {
-                    await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);
-                  }
-                  if (payload.mediaUrls?.length) {
-                    for (const url of payload.mediaUrls) {
-                      await sendMedia(config, message.from, "image", { link: url }, log);
-                    }
-                  }
-                },
-                onReplyStart: () => {
-                  log.info?.(`[whatsapp-cloud] Generating reply for ${message.senderName} (${message.from})`);
-                },
-              },
-            });
-          } catch (err) {
-            log.error(`[whatsapp-cloud] Failed to dispatch inbound message: ${err}`);
-          }
-        },
-        // Status update handler
-        (messageId, status, recipientId) => {
-          log.debug?.(`[whatsapp-cloud] Status: ${status} for message ${messageId} to ${recipientId}`);
-        },
-        log
-      );
-
-      log.info("[whatsapp-cloud] Channel started");
-      log.info(`[whatsapp-cloud]   Webhook: http://localhost:${config.webhookPort}${config.webhookPath}`);
       log.info(`[whatsapp-cloud]   DM Policy: ${config.dmPolicy}`);
       if (config.dmPolicy === "allowlist") {
         log.info(`[whatsapp-cloud]   Allowed: ${config.allowFrom.join(", ") || "(none)"}`);
@@ -396,6 +539,31 @@ const whatsappCloudChannel = {
           running: true,
           lastStartAt: Date.now(),
           mode: "webhook",
+        });
+      }
+
+      // Keep the account alive until the gateway aborts it. Returning early
+      // makes the gateway treat the channel as exited and auto-restart it in a
+      // loop. On abort, tear down the standalone server (if any).
+      const abortSignal: AbortSignal | undefined = ctx.abortSignal;
+      if (abortSignal) {
+        await new Promise<void>((resolve) => {
+          if (abortSignal.aborted) {
+            resolve();
+            return;
+          }
+          abortSignal.addEventListener(
+            "abort",
+            () => {
+              if (webhookServer) {
+                webhookServer.close();
+                webhookServer = null;
+              }
+              log.info?.("[whatsapp-cloud] Channel stopping (abort signal)");
+              resolve();
+            },
+            { once: true }
+          );
         });
       }
     },
@@ -417,7 +585,7 @@ const whatsappCloudChannel = {
           "whatsapp-cloud": rest,
         };
 
-        await getWhatsAppCloudRuntime().config.writeConfigFile(nextCfg);
+        await getWhatsAppCloudRuntime().config.replaceConfigFile({ nextConfig: nextCfg, afterWrite: { mode: "auto" } });
       }
 
       return {
@@ -495,6 +663,57 @@ const plugin = {
     // Register the channel
     api.registerChannel({ plugin: whatsappCloudChannel });
 
+    // Optional: mount the webhook on the gateway's shared HTTP server instead of
+    // a standalone server. Only enable when the gateway's routes are exposed on
+    // a public/webhook-only listener (NOT the loopback operator port, which also
+    // serves the dashboard). Opt in via channels.whatsapp-cloud.useGatewayRoute.
+    const useGatewayRoute = api.pluginConfig?.useGatewayRoute === true;
+    if (useGatewayRoute && typeof api.registerHttpRoute === "function") {
+      const routePath =
+        (api.pluginConfig?.webhookPath as string | undefined) ??
+        CONFIG_DEFAULTS.webhookPath!;
+      try {
+        api.registerHttpRoute({
+          path: routePath,
+          auth: "plugin", // plugin validates its own auth (verifyToken + HMAC)
+          match: "exact",
+          replaceExisting: true,
+          handler: async (req: any, res: any): Promise<boolean> => {
+            const runtime = api.runtime;
+            let config: WhatsAppCloudConfig;
+            try {
+              config = resolveConfig(runtime.config.current());
+            } catch (err) {
+              log.error(`[whatsapp-cloud] Failed to load config for webhook: ${err}`);
+              res.writeHead(503);
+              res.end("Service unavailable");
+              return true;
+            }
+            if (!config.enabled) {
+              res.writeHead(503);
+              res.end("Channel disabled");
+              return true;
+            }
+            await ensureSecretsResolved(config, runtime);
+            return handleWebhookRequest(
+              req,
+              res,
+              config,
+              (message) => dispatchInbound(message, config, runtime, DEFAULT_ACCOUNT_ID, log),
+              (messageId, status, recipientId) => {
+                log.debug?.(`[whatsapp-cloud] Status: ${status} for message ${messageId} to ${recipientId}`);
+              },
+              log
+            );
+          },
+        });
+        gatewayRouteMounted = true;
+        log.info(`[whatsapp-cloud] Webhook route mounted on gateway: ${routePath}`);
+      } catch (err) {
+        log.warn?.(`[whatsapp-cloud] registerHttpRoute failed, will use standalone server: ${err}`);
+      }
+    }
+
     // Register CLI commands: `openclaw whatsapp-cloud setup|status|test`
     if (typeof api.registerCli === "function") {
       api.registerCli(
@@ -513,7 +732,7 @@ const plugin = {
                 // Save via runtime config
                 try {
                   const runtime = getWhatsAppCloudRuntime();
-                  const currentCfg = await runtime.config.loadConfig();
+                  const currentCfg = runtime.config.current();
                   const nextCfg = {
                     ...currentCfg,
                     channels: {
@@ -532,7 +751,7 @@ const plugin = {
                       },
                     },
                   };
-                  await runtime.config.writeConfigFile(nextCfg);
+                  await runtime.config.replaceConfigFile({ nextConfig: nextCfg, afterWrite: { mode: "auto" } });
                   log.info("[whatsapp-cloud] Configuration saved to openclaw.json");
                   console.log("\n  Then: openclaw gateway restart\n");
                 } catch {
@@ -558,14 +777,20 @@ const plugin = {
             .command("status")
             .description("Check WhatsApp Cloud API channel health")
             .action(async () => {
-              const isRunning = webhookServer !== null && webhookServer.listening;
+              const standaloneRunning = webhookServer !== null && webhookServer.listening;
+              const isRunning = gatewayRouteMounted || standaloneRunning;
               console.log(`WhatsApp Cloud API: ${isRunning ? "OK" : "Not running"}`);
-              console.log(`  Webhook server: ${isRunning ? "running" : "not running"}`);
+              if (gatewayRouteMounted) {
+                console.log(`  Webhook: mounted on gateway HTTP server (public origin)`);
+              } else {
+                console.log(`  Webhook server: ${standaloneRunning ? "running (standalone)" : "not running"}`);
+              }
 
               try {
                 const runtime = getWhatsAppCloudRuntime();
-                const cfg = await runtime.config.loadConfig();
+                const cfg = runtime.config.current();
                 const config = resolveConfig(cfg);
+                await ensureSecretsResolved(config, runtime);
                 const validation = validateConfig(config);
                 if (!validation.valid) {
                   for (const err of validation.errors) {
@@ -587,8 +812,9 @@ const plugin = {
             .action(async (phone: string) => {
               try {
                 const runtime = getWhatsAppCloudRuntime();
-                const cfg = await runtime.config.loadConfig();
+                const cfg = runtime.config.current();
                 const config = resolveConfig(cfg);
+                await ensureSecretsResolved(config, runtime);
 
                 if (!config.accessToken || !config.phoneNumberId) {
                   log.error("Missing config. Run 'openclaw whatsapp-cloud setup' first.");
