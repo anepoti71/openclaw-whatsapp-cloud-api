@@ -29,8 +29,8 @@ This plugin uses the **official WhatsApp Cloud API** (`graph.facebook.com`) inst
 ### 1. Install the plugin
 
 ```bash
-git clone https://github.com/baiadigitale/openclaw-channel-whatsapp-cloud.git
-cd openclaw-channel-whatsapp-cloud
+git clone https://github.com/anepoti71/openclaw-whatsapp-cloud-api.git
+cd openclaw-whatsapp-cloud-api
 npm install && npm run build
 openclaw plugins install -l .
 ```
@@ -40,7 +40,7 @@ openclaw plugins install -l .
 > {
 >   "plugins": {
 >     "load": {
->       "paths": ["/absolute/path/to/openclaw-channel-whatsapp-cloud"]
+>       "paths": ["/absolute/path/to/openclaw-whatsapp-cloud-api"]
 >     }
 >   }
 > }
@@ -197,7 +197,8 @@ credentials/
       "verifyToken": "${WHATSAPP_VERIFY_TOKEN}",
       "webhookPort": 3100,
       "dmPolicy": "open",
-      "sendReadReceipts": true
+      "sendReadReceipts": true,
+      "suppressServiceNotices": true
     }
   },
 
@@ -232,7 +233,7 @@ WHATSAPP_VERIFY_TOKEN=
 npm install -g openclaw
 
 # 2. Clone the plugin (private repo — no npm publish needed)
-git clone git@github.com:baiadigitale/openclaw-channel-whatsapp-cloud.git ~/extensions/whatsapp-cloud
+git clone git@github.com:anepoti71/openclaw-whatsapp-cloud-api.git ~/extensions/whatsapp-cloud
 cd ~/extensions/whatsapp-cloud && npm install && npm run build
 
 # 3. Clone your deployment repo
@@ -380,6 +381,8 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 | `dmPolicy` | string | `"open"` | `"open"` (anyone) or `"allowlist"` (restricted) |
 | `allowFrom` | string[] | `[]` | E.164 numbers allowed when dmPolicy=allowlist |
 | `sendReadReceipts` | boolean | `true` | Auto-mark incoming messages as read |
+| `suppressServiceNotices` | boolean | `true` | Never relay OpenClaw's own service/fallback notices (e.g. "couldn't produce or deliver a reply") to the user. Set `false` to let them through |
+| `serviceNoticeReplacement` | string | — | Optional friendly text sent in place of a suppressed service notice. Leave empty to drop it silently |
 
 ## Features
 
@@ -409,6 +412,19 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 - DM policy (open / allowlist)
 - Phone number normalization for allowlist matching
 
+### Reliability
+
+- **Service-notice suppression** (enabled by default): OpenClaw's own
+  service/fallback messages, for example `⚠️ OpenClaw couldn't produce or
+  deliver a reply...` or the session-queue-full notice, are never relayed to the
+  WhatsApp user. They are filtered at the single outbound chokepoint (`sendText`),
+  so both the inbound reply path and the core auto-reply fallback are covered. The
+  dispatcher is told the message was delivered, so it does not retry or escalate.
+  - Set `suppressServiceNotices: false` to let these notices through.
+  - Set `serviceNoticeReplacement` to a friendly string (e.g. `"Un momento,
+    riprovo tra poco 🙏"`) to send that in place of the notice instead of
+    dropping it silently.
+
 ## The 24-hour messaging window
 
 WhatsApp Cloud API enforces a **24-hour customer service window**:
@@ -420,18 +436,18 @@ WhatsApp Cloud API enforces a **24-hour customer service window**:
 This plugin handles free-form responses automatically. For proactive notifications, use the `sendTemplate` API:
 
 ```typescript
-import { sendTemplate } from "@baia-digitale/whatsapp-cloud";
+import { sendTemplate } from "@anepoti71/openclaw-whatsapp-cloud-api";
 ```
 
 ## Development
 
 ```bash
-git clone https://github.com/baiadigitale/openclaw-channel-whatsapp-cloud.git
-cd openclaw-channel-whatsapp-cloud
+git clone https://github.com/anepoti71/openclaw-whatsapp-cloud-api.git
+cd openclaw-whatsapp-cloud-api
 npm install
 
 npm run type-check    # TypeScript strict mode
-npm test              # 32 tests
+npm test              # 43 tests
 npm run dev           # Watch mode (auto-rebuild)
 
 # Link to OpenClaw for development
