@@ -1,10 +1,14 @@
 {
-  "name": "openclaw-whatsapp-cloud-api",
+  "name": "@anepoti71/openclaw-whatsapp-cloud-api",
   "version": "1.0.2",
   "description": "WhatsApp Cloud API channel plugin for OpenClaw — official Meta Business API, no Baileys",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "files": [
     "dist",
     "src",
@@ -30,7 +34,7 @@
       ]
     },
     "install": {
-      "npmSpec": "openclaw-whatsapp-cloud-api",
+      "npmSpec": "@anepoti71/openclaw-whatsapp-cloud-api",
       "localPath": "extensions/whatsapp-cloud",
       "defaultChoice": "npm"
     }
@@ -58,7 +62,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mcostantino-dev/openclaw-whatsapp-cloud-api"
+    "url": "https://github.com/anepoti71/openclaw-whatsapp-cloud-api"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
