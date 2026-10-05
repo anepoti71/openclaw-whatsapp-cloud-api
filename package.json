@@ -1,6 +1,6 @@
 {
   "name": "@anepoti71/openclaw-whatsapp-cloud-api",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "WhatsApp Cloud API channel plugin for OpenClaw — official Meta Business API, no Baileys",
   "type": "module",
   "main": "./dist/index.js",

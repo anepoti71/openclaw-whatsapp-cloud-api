@@ -11,6 +11,7 @@
 
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
+import { applyToneTag } from "./tone.js";
 import { startWebhookServer, handleWebhookRequest } from "./webhook.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
@@ -154,7 +155,11 @@ async function dispatchInbound(
       dispatcherOptions: {
         deliver: async (payload: any) => {
           if (payload.text) {
-            await sendText(config, message.from, payload.text, log);
+            // Capture a natural-language tone request: the agent emits an internal
+            // <<TONE:...>> tag, which we persist (keyed by the user's number) and
+            // strip before sending so the user never sees it.
+            const text = applyToneTag(message.from, payload.text, log);
+            if (text) await sendText(config, message.from, text, log);
           }
           if (payload.mediaUrl) {
             await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);
@@ -900,6 +905,7 @@ export default plugin;
 
 export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia } from "./api.js";
 export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia } from "./api.js";
+export { extractToneTag, applyToneTag, persistTonePreference, clearTonePreference, resolveTonePrefsDir } from "./tone.js";
 export { runSetupWizard, validateConfig } from "./setup.js";
 export type { WhatsAppCloudConfig } from "./types.js";
 export type { ParsedInboundMessage, ParsedInboundMessage as InboundMessage } from "./webhook.js";
