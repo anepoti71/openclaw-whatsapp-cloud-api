@@ -6,7 +6,7 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 // Import after mocking
-import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl, isServiceNotice } from "../api.js";
+import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl, isServiceNotice, stripInspectFooter } from "../api.js";
 
 const mockLog = {
   info: vi.fn(),
@@ -139,6 +139,33 @@ describe("isServiceNotice", () => {
   it("does not match a normal agent reply", () => {
     expect(isServiceNotice("Ciao! Come posso aiutarti?")).toBe(false);
     expect(isServiceNotice("⚠️ Attenzione: la ricetta richiede 20 minuti.")).toBe(false);
+  });
+});
+
+describe("stripInspectFooter", () => {
+  it("removes a trailing Inspect run link", () => {
+    const t = "Buongiorno Annalisa, buona giornata!\nInspect: https://x.ngrok-free.dev/chat/public/cron/abc/run/def";
+    expect(stripInspectFooter(t)).toBe("Buongiorno Annalisa, buona giornata!");
+  });
+  it("leaves a normal message untouched", () => {
+    expect(stripInspectFooter("Ciao, come va?")).toBe("Ciao, come va?");
+  });
+  it("does not strip the word Inspect mid-text", () => {
+    const t = "Inspect the pipes, then call me.";
+    expect(stripInspectFooter(t)).toBe(t);
+  });
+});
+
+describe("sendText strips inspect footer before sending", () => {
+  beforeEach(() => vi.clearAllMocks());
+  it("sends only the message body, not the Inspect footer", async () => {
+    const config = makeConfig();
+    mockApiSuccess();
+    await sendText(config, "393491234567", "Buongiorno!\nInspect: https://x.ngrok-free.dev/chat/public/cron/a/run/b", mockLog);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.text.body).toBe("Buongiorno!");
+    expect(body.text.body).not.toContain("Inspect");
   });
 });
 

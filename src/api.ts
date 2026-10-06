@@ -89,6 +89,17 @@ export function isServiceNotice(text: string): boolean {
   return SERVICE_NOTICE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
+/**
+ * Cron/agent deliveries append a run-inspection footer ("Inspect: https://…/run/…")
+ * aimed at the operator, never at the end user. Strip a trailing Inspect line so it
+ * never reaches a WhatsApp recipient.
+ */
+const INSPECT_FOOTER_RE = /\n+\s*Inspect:\s*https?:\/\/\S+\s*$/i;
+
+export function stripInspectFooter(text: string): string {
+  return text.replace(INSPECT_FOOTER_RE, "").trimEnd();
+}
+
 // ---------------------------------------------------------------------------
 // Text messages
 // ---------------------------------------------------------------------------
@@ -99,6 +110,9 @@ export async function sendText(
   text: string,
   log: Logger
 ): Promise<SendResult> {
+  // Strip the operator-only run-inspection footer before anything else.
+  text = stripInspectFooter(text);
+
   // Never relay OpenClaw's own service/fallback notices to the user unless the
   // operator explicitly opted in (suppressServiceNotices === false). Returning
   // ok makes the core dispatcher treat it as delivered, so it does not retry or

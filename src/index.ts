@@ -932,7 +932,7 @@ export default plugin;
 // ---------------------------------------------------------------------------
 
 export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia } from "./api.js";
-export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia } from "./api.js";
+export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia, isServiceNotice, stripInspectFooter } from "./api.js";
 export { extractToneTag, applyToneTag, persistTonePreference, clearTonePreference, resolveTonePrefsDir } from "./tone.js";
 export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir } from "./media.js";
 export { runSetupWizard, validateConfig } from "./setup.js";
