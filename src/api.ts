@@ -94,7 +94,9 @@ export function isServiceNotice(text: string): boolean {
  * aimed at the operator, never at the end user. Strip a trailing Inspect line so it
  * never reaches a WhatsApp recipient.
  */
-const INSPECT_FOOTER_RE = /\n+\s*Inspect:\s*https?:\/\/\S+\s*$/i;
+// Matches an "Inspect: <url>" line whether it is appended to a reply (preceded by
+// a newline) OR delivered as its own standalone message (no leading newline).
+const INSPECT_FOOTER_RE = /(^|\n)[ \t]*Inspect:\s*https?:\/\/\S+\s*$/i;
 
 export function stripInspectFooter(text: string): string {
   return text.replace(INSPECT_FOOTER_RE, "").trimEnd();
@@ -110,8 +112,16 @@ export async function sendText(
   text: string,
   log: Logger
 ): Promise<SendResult> {
-  // Strip the operator-only run-inspection footer before anything else.
+  // Strip the operator-only run-inspection footer before anything else. If the
+  // message was ONLY that footer (delivered as its own message), drop it entirely.
+  const beforeStrip = text;
   text = stripInspectFooter(text);
+  if (!text.trim()) {
+    if (beforeStrip.trim() && beforeStrip.trim() !== text.trim()) {
+      log.info?.("[whatsapp-cloud] Dropped standalone Inspect-footer message");
+      return { ok: true, messageId: "suppressed-inspect-footer" };
+    }
+  }
 
   // Never relay OpenClaw's own service/fallback notices to the user unless the
   // operator explicitly opted in (suppressServiceNotices === false). Returning

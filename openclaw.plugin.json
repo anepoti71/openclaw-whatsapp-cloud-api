@@ -5,7 +5,7 @@
     { "name": "whatsapp-cloud", "description": "WhatsApp Cloud API channel management", "hasSubcommands": true }
   ],
   "name": "WhatsApp Cloud API",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "WhatsApp channel using Meta's official Cloud API. Production-safe for business use — no Baileys, no ban risk.",
   "author": "Alessandro Nepoti",
   "license": "MIT",

@@ -154,6 +154,19 @@ describe("stripInspectFooter", () => {
     const t = "Inspect the pipes, then call me.";
     expect(stripInspectFooter(t)).toBe(t);
   });
+  it("strips a standalone Inspect-only message (no leading newline)", () => {
+    expect(stripInspectFooter("Inspect: https://x.ngrok-free.dev/chat/public/cron/a/run/b")).toBe("");
+  });
+});
+
+describe("sendText drops a standalone inspect-footer message", () => {
+  beforeEach(() => vi.clearAllMocks());
+  it("does not send when the whole message is only the Inspect link", async () => {
+    const config = makeConfig();
+    const result = await sendText(config, "393491234567", "Inspect: https://x.ngrok-free.dev/chat/public/cron/a/run/b", mockLog);
+    expect(result.ok).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("sendText strips inspect footer before sending", () => {
