@@ -124,6 +124,7 @@ export interface IncomingMessage {
     list_reply?: { id: string; title: string; description?: string };
   };
   button?: { text: string; payload: string };
+  reaction?: { message_id: string; emoji: string };
   context?: {
     from: string;
     id: string;

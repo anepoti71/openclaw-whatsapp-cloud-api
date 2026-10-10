@@ -393,6 +393,13 @@ function extractMessageContent(msg: WAMessage): ExtractedContent {
     case "button":
       return { text: msg.button?.text ?? "[Button]" };
 
+    case "reaction":
+      return {
+        text: msg.reaction?.emoji
+          ? `[reacted with ${msg.reaction.emoji}]`
+          : "[removed their reaction]",
+      };
+
     default:
       return { text: `[${msg.type} message — not yet supported]` };
   }
