@@ -361,7 +361,12 @@ function extractMessageContent(msg: WAMessage): ExtractedContent {
     case "contacts":
       return {
         text: msg.contacts
-          ? `[Contact: ${msg.contacts.map((c) => c.name.formatted_name).join(", ")}]`
+          ? `[Contact: ${msg.contacts
+              .map((c) => {
+                const phones = c.phones?.map((p) => p.phone).filter(Boolean).join(", ");
+                return phones ? `${c.name.formatted_name} (${phones})` : c.name.formatted_name;
+              })
+              .join("; ")}]`
           : "[Contact]",
       };
 
