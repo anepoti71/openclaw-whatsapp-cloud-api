@@ -83,6 +83,11 @@
       "serviceNoticeReplacement": {
         "type": "string",
         "description": "Optional friendly text sent in place of a suppressed service notice. Leave empty to drop the notice silently."
+      },
+      "mediaLocalRoots": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Extra directories outbound local media may be read from. OpenClaw media dirs and agent workspaces are always allowed; other paths are refused."
       }
     },
     "required": []
@@ -101,7 +106,8 @@
     "sendReadReceipts": { "label": "Send Read Receipts" },
     "downloadInboundMedia": { "label": "Download Inbound Media" },
     "suppressServiceNotices": { "label": "Suppress Service Notices" },
-    "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
+    "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" },
+    "mediaLocalRoots": { "label": "Extra Local Media Directories" }
   },
   "channelConfigs": {
     "whatsapp-cloud": {
@@ -206,6 +212,11 @@
           "serviceNoticeReplacement": {
             "type": "string",
             "description": "Optional friendly text sent in place of a suppressed service notice. Leave empty to drop the notice silently."
+          },
+          "mediaLocalRoots": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra directories outbound local media may be read from. OpenClaw media dirs and agent workspaces are always allowed; other paths are refused."
           }
         },
         "required": []
@@ -224,7 +235,8 @@
         "sendReadReceipts": { "label": "Send Read Receipts" },
         "downloadInboundMedia": { "label": "Download Inbound Media" },
         "suppressServiceNotices": { "label": "Suppress Service Notices" },
-        "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" }
+        "serviceNoticeReplacement": { "label": "Service Notice Replacement Text" },
+        "mediaLocalRoots": { "label": "Extra Local Media Directories" }
       }
     }
   }

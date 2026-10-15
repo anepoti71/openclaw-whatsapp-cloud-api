@@ -10,14 +10,15 @@
 // ---------------------------------------------------------------------------
 
 import type { Server } from "node:http";
-import { sendText, sendTypingIndicator } from "./api.js";
+import { sendText, sendInteractive, sendTypingIndicator } from "./api.js";
 import { applyToneTag } from "./tone.js";
 import { saveInboundMedia, sendOutboundMedia } from "./media.js";
+import { renderPresentationForWhatsApp, inboundTextForChoice, PRESENTATION_CAPABILITIES } from "./presentation.js";
 import { startWebhookServer, handleWebhookRequest } from "./webhook.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
-import type { WhatsAppCloudConfig, Logger, SecretRef } from "./types.js";
+import type { WhatsAppCloudConfig, Logger, SecretRef, SendResult } from "./types.js";
 import { CONFIG_DEFAULTS } from "./types.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
 
@@ -111,12 +112,15 @@ async function dispatchInbound(
   accountId: string,
   log: Logger
 ): Promise<void> {
+  let stopTyping = () => {};
   try {
     // Resolve any SecretRef-backed credentials before using them
     await ensureSecretsResolved(config, runtime);
 
-    // Show typing indicator immediately (auto-dismissed on reply or after 25s)
-    sendTypingIndicator(config, message.messageId, log).catch(() => {});
+    // Show typing indicator now and keep it alive for long turns (image
+    // generation, tools): WhatsApp drops it after ~25s, and a silent chat makes
+    // users resend, which starts duplicate work.
+    stopTyping = startTypingKeepalive(config, message.messageId, log);
 
     // Load fresh config for dispatch
     const freshCfg = runtime.config.current();
@@ -144,6 +148,12 @@ async function dispatchInbound(
       OriginatingTo: message.from,
       Timestamp: parseInt(message.timestamp, 10) * 1000,
     };
+
+    // A tapped button/list row from a presentation: `cmd:` ids run the command.
+    if (message.interactiveReply) {
+      const text = inboundTextForChoice(message.interactiveReply.id, message.interactiveReply.title);
+      msgCtx.Body = msgCtx.RawBody = msgCtx.CommandBody = msgCtx.BodyForCommands = text;
+    }
 
     if (message.quotedMessageId) {
       msgCtx.ReplyToId = message.quotedMessageId;
@@ -181,20 +191,13 @@ async function dispatchInbound(
       cfg: freshCfg,
       dispatcherOptions: {
         deliver: async (payload: any) => {
-          if (payload.text) {
-            // Capture a natural-language tone request: the agent emits an internal
-            // <<TONE:...>> tag, which we persist (keyed by the user's number) and
-            // strip before sending so the user never sees it.
-            const text = applyToneTag(message.from, payload.text, log);
-            if (text) await sendText(config, message.from, text, log);
-          }
-          if (payload.mediaUrl) {
-            await sendOutboundMedia(config, message.from, payload.mediaUrl, undefined, log);
-          }
-          if (payload.mediaUrls?.length) {
-            for (const url of payload.mediaUrls) {
-              await sendOutboundMedia(config, message.from, url, undefined, log);
-            }
+          // Capture a natural-language tone request: the agent emits an internal
+          // <<TONE:...>> tag, which we persist (keyed by the user's number) and
+          // strip before sending so the user never sees it.
+          const text = payload.text ? applyToneTag(message.from, payload.text, log) : payload.text;
+          const results = await deliverPayload(config, message.from, { ...payload, text }, log);
+          for (const result of results) {
+            if (!result.ok) log.warn?.(`[whatsapp-cloud] Reply to ${message.from} not delivered: ${result.error}`);
           }
         },
         onReplyStart: () => {
@@ -204,7 +207,100 @@ async function dispatchInbound(
     });
   } catch (err) {
     log.error(`[whatsapp-cloud] Failed to dispatch inbound message: ${err}`);
+  } finally {
+    stopTyping();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Typing keepalive
+// ---------------------------------------------------------------------------
+
+const TYPING_RENEW_MS = 20_000;
+const TYPING_MAX_MS = 10 * 60_000;
+
+/** Send the typing indicator now and renew it until stopped (capped at 10 min). */
+export function startTypingKeepalive(
+  config: WhatsAppCloudConfig,
+  messageId: string,
+  log: Logger
+): () => void {
+  const send = () => sendTypingIndicator(config, messageId, log).catch(() => {});
+  send();
+  const timer = setInterval(send, TYPING_RENEW_MS);
+  const cap = setTimeout(() => clearInterval(timer), TYPING_MAX_MS);
+  timer.unref?.();
+  cap.unref?.();
+  return () => {
+    clearInterval(timer);
+    clearTimeout(cap);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Payload delivery (shared by inbound replies and the outbound adapter)
+// ---------------------------------------------------------------------------
+
+export interface DeliverContext {
+  /** Host-authorized local media reader from OpenClaw's outbound context. */
+  readFile?: (filePath: string) => Promise<Buffer>;
+  /** Host-authorized local media roots from OpenClaw's outbound context. */
+  localRoots?: readonly string[];
+}
+
+/**
+ * Send one OpenClaw reply payload: text, presentation (buttons/list), media.
+ * Honors replyToId (quotes on the first message only) and audioAsVoice.
+ * Returns one result per WhatsApp message attempted.
+ */
+export async function deliverPayload(
+  config: WhatsAppCloudConfig,
+  to: string,
+  payload: any,
+  log: Logger,
+  ctx: DeliverContext = {}
+): Promise<SendResult[]> {
+  const results: SendResult[] = [];
+  let quoted = false;
+  const replyToId = (): string | undefined => {
+    if (quoted || !payload.replyToId) return undefined;
+    quoted = true;
+    return payload.replyToId;
+  };
+
+  const presentation = payload.presentation ?? payload.channelData?.["whatsapp-cloud"]?.presentation;
+  const rendered = presentation?.blocks?.length ? renderPresentationForWhatsApp(presentation) : undefined;
+  const native = !!rendered?.interactive;
+  const authoredFallback = payload.presentationTextMode === "fallback";
+
+  // Authored fallback text is redundant when buttons render natively; when they
+  // don't, it replaces the generic flattened presentation text.
+  if (payload.text && !(native && authoredFallback)) {
+    results.push(await sendText(config, to, payload.text, log, { replyToId: replyToId() }));
+  }
+  if (rendered?.text && !(!native && authoredFallback && payload.text)) {
+    results.push(await sendText(config, to, rendered.text, log, { replyToId: replyToId() }));
+  }
+  if (rendered?.interactive) {
+    results.push(await sendInteractive(config, to, rendered.interactive, log, { replyToId: replyToId() }));
+  }
+
+  // Unique: a payload may carry the same file in both mediaUrl and mediaUrls.
+  const mediaRefs = [...new Set<string>([
+    ...(payload.mediaUrl ? [payload.mediaUrl] : []),
+    ...(payload.mediaUrls ?? []),
+  ])];
+  for (const ref of mediaRefs) {
+    results.push(
+      await sendOutboundMedia(config, to, ref, undefined, log, {
+        replyToId: replyToId(),
+        asVoice: payload.audioAsVoice === true,
+        readFile: ctx.readFile,
+        localRoots: ctx.localRoots,
+      })
+    );
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +339,9 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     suppressServiceNotices: raw.suppressServiceNotices ?? CONFIG_DEFAULTS.suppressServiceNotices!,
     ...(typeof raw.serviceNoticeReplacement === "string"
       ? { serviceNoticeReplacement: raw.serviceNoticeReplacement }
+      : {}),
+    ...(Array.isArray(raw.mediaLocalRoots)
+      ? { mediaLocalRoots: raw.mediaLocalRoots.filter((r: unknown) => typeof r === "string") }
       : {}),
     _rawAccessToken: raw.accessToken,
     _rawAppSecret: raw.appSecret,
@@ -467,8 +566,50 @@ const whatsappCloudChannel = {
   outbound: {
     deliveryMode: "direct" as const,
     textChunkLimit: 4096,
+    presentationCapabilities: PRESENTATION_CAPABILITIES,
 
-    sendText: async ({ cfg, to, text, accountId }: {
+    // Keep the core-adapted presentation on the payload; sendPayload renders it.
+    renderPresentation: ({ payload, presentation }: { payload: any; presentation: any }) => ({
+      ...payload,
+      presentation,
+      channelData: { ...payload.channelData, "whatsapp-cloud": { presentation } },
+    }),
+
+    sendPayload: async (ctx: any) => {
+      const config = resolveConfig(ctx.cfg);
+      const log: Logger = getWhatsAppCloudRuntime()?.logging?.getChildLogger?.({ channel: "whatsapp-cloud" }) ?? console as unknown as Logger;
+      await ensureSecretsResolved(config, getWhatsAppCloudRuntime());
+
+      if (!config.accessToken || !config.phoneNumberId) {
+        throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
+      }
+
+      const payload = {
+        ...ctx.payload,
+        replyToId: ctx.payload?.replyToId ?? ctx.replyToId ?? undefined,
+        audioAsVoice: ctx.payload?.audioAsVoice ?? ctx.audioAsVoice,
+      };
+      const results = await deliverPayload(config, ctx.to, payload, log, {
+        readFile: ctx.mediaReadFile,
+        localRoots: ctx.mediaLocalRoots,
+      });
+      const sent = results.filter((r) => r.ok);
+      // Throw only when nothing went out: a retry after a partial send would
+      // duplicate the parts that were delivered.
+      if (results.length > 0 && sent.length === 0) {
+        throw new Error(`WhatsApp Cloud API send failed: ${results[0]?.error}`);
+      }
+      for (const r of results) {
+        if (!r.ok) log.warn?.(`[whatsapp-cloud] Partial delivery to ${ctx.to}: ${r.error}`);
+      }
+      return {
+        channel: "whatsapp-cloud" as any,
+        messageId: sent[sent.length - 1]?.messageId ?? "unknown",
+        chatId: ctx.to,
+      };
+    },
+
+    sendText: async ({ cfg, to, text, accountId, replyToId }: {
       cfg: any;
       to: string;
       text: string;
@@ -487,7 +628,7 @@ const whatsappCloudChannel = {
         throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
       }
 
-      const result = await sendText(config, to, text, log);
+      const result = await sendText(config, to, text, log, { replyToId });
 
       if (!result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);
@@ -500,12 +641,16 @@ const whatsappCloudChannel = {
       };
     },
 
-    sendMedia: async ({ cfg, to, text, mediaUrl, accountId }: {
+    sendMedia: async ({ cfg, to, text, mediaUrl, accountId, replyToId, audioAsVoice, mediaReadFile, mediaLocalRoots }: {
       cfg: any;
       to: string;
       text: string;
       mediaUrl?: string;
       accountId?: string | null;
+      replyToId?: string | null;
+      audioAsVoice?: boolean;
+      mediaReadFile?: (filePath: string) => Promise<Buffer>;
+      mediaLocalRoots?: readonly string[];
     }) => {
       const config = resolveConfig(cfg);
       const log: Logger = getWhatsAppCloudRuntime()?.logging?.getChildLogger?.({ channel: "whatsapp-cloud" }) ?? console as unknown as Logger;
@@ -516,7 +661,12 @@ const whatsappCloudChannel = {
       }
 
       if (mediaUrl) {
-        const result = await sendOutboundMedia(config, to, mediaUrl, text || undefined, log);
+        const result = await sendOutboundMedia(config, to, mediaUrl, text || undefined, log, {
+          replyToId,
+          asVoice: audioAsVoice === true,
+          readFile: mediaReadFile,
+          localRoots: mediaLocalRoots,
+        });
         if (!result.ok) {
           throw new Error(`WhatsApp Cloud API media send failed: ${result.error}`);
         }
@@ -528,7 +678,7 @@ const whatsappCloudChannel = {
       }
 
       // Fallback to text if no media URL
-      const result = await sendText(config, to, text, log);
+      const result = await sendText(config, to, text, log, { replyToId });
       if (!result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);
       }
@@ -934,7 +1084,8 @@ export default plugin;
 export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia, uploadMedia } from "./api.js";
 export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia, isServiceNotice, stripInspectFooter } from "./api.js";
 export { extractToneTag, applyToneTag, persistTonePreference, clearTonePreference, resolveTonePrefsDir } from "./tone.js";
-export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir, sendOutboundMedia } from "./media.js";
+export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir, sendOutboundMedia, resolveAllowedMediaRoots } from "./media.js";
+export { renderPresentationForWhatsApp, inboundTextForChoice } from "./presentation.js";
 export { runSetupWizard, validateConfig } from "./setup.js";
 export type { WhatsAppCloudConfig } from "./types.js";
 export type { ParsedInboundMessage, ParsedInboundMessage as InboundMessage } from "./webhook.js";

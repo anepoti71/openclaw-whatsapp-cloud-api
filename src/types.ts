@@ -49,6 +49,12 @@ export interface WhatsAppCloudConfig {
    * unset, the notice is dropped silently (no message reaches the user).
    */
   serviceNoticeReplacement?: string;
+  /**
+   * Extra directories the channel may read local media from when an agent sends
+   * a file path. Defaults already cover OpenClaw's media dirs and agent
+   * workspaces; anything else (e.g. ~/.openclaw/credentials) is refused.
+   */
+  mediaLocalRoots?: string[];
   /** Raw accessToken value as configured (string or SecretRef) before resolution. */
   _rawAccessToken?: SecretInput;
   /** Raw appSecret value as configured (string or SecretRef) before resolution. */
@@ -241,7 +247,7 @@ export interface SendMediaRequest {
   to: string;
   type: "image" | "audio" | "video" | "document";
   image?: { link?: string; id?: string; caption?: string };
-  audio?: { link?: string; id?: string };
+  audio?: { link?: string; id?: string; voice?: boolean };
   video?: { link?: string; id?: string; caption?: string };
   document?: { link?: string; id?: string; caption?: string; filename?: string };
 }

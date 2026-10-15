@@ -10,6 +10,7 @@ import type {
   WebhookPayload,
   IncomingMessage as WAMessage,
   WebhookContact,
+  WebhookError,
   Logger,
 } from "./types.js";
 
@@ -51,8 +52,46 @@ export type InboundMessageHandler = (message: ParsedInboundMessage) => void;
 export type StatusUpdateHandler = (
   messageId: string,
   status: string,
-  recipientId: string
+  recipientId: string,
+  errors?: WebhookError[]
 ) => void;
+
+// ---------------------------------------------------------------------------
+// Inbound de-duplication
+// ---------------------------------------------------------------------------
+// Meta delivers webhooks at-least-once: the same message can arrive again after
+// a slow ack or a retry. Without this, a redelivery starts a second agent turn
+// (duplicate replies, duplicate image generations).
+// ---------------------------------------------------------------------------
+
+const DEDUP_TTL_MS = 10 * 60 * 1000;
+const DEDUP_MAX_ENTRIES = 5000;
+const seenMessageIds = new Map<string, number>();
+
+/** True if this message id was already seen within the TTL; records it otherwise. */
+export function isDuplicateMessage(messageId: string, now: number = Date.now()): boolean {
+  const seenAt = seenMessageIds.get(messageId);
+  if (seenAt !== undefined && now - seenAt < DEDUP_TTL_MS) return true;
+
+  // delete first so a re-seen id moves to the end (Map keeps insertion order).
+  seenMessageIds.delete(messageId);
+  seenMessageIds.set(messageId, now);
+  if (seenMessageIds.size > DEDUP_MAX_ENTRIES) {
+    for (const [id, ts] of seenMessageIds) {
+      if (now - ts >= DEDUP_TTL_MS || seenMessageIds.size > DEDUP_MAX_ENTRIES) {
+        seenMessageIds.delete(id);
+      } else {
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+/** Clear the de-duplication cache (tests). */
+export function resetSeenMessages(): void {
+  seenMessageIds.clear();
+}
 
 // ---------------------------------------------------------------------------
 // Server
@@ -220,9 +259,20 @@ async function handleIncoming(
       }
 
       // Process status updates
-      if (statuses?.length && onStatus) {
+      if (statuses?.length) {
         for (const status of statuses) {
-          onStatus(status.id, status.status, status.recipient_id);
+          // A 200 on send only means Meta accepted the request; delivery can
+          // still fail later (outside 24h window, unreachable number, bad media)
+          // and that only shows up here.
+          if (status.status === "failed") {
+            const detail = (status.errors ?? [])
+              .map((e) => `${e.code} ${e.title}${e.error_data?.details ? ` — ${e.error_data.details}` : ""}`)
+              .join("; ");
+            log.warn(
+              `[whatsapp-cloud] Delivery FAILED for ${status.id} to ${status.recipient_id}: ${detail || "no error detail"}`
+            );
+          }
+          onStatus?.(status.id, status.status, status.recipient_id, status.errors);
         }
       }
 
@@ -247,6 +297,11 @@ function processMessage(
   onMessage: InboundMessageHandler,
   log: Logger
 ): void {
+  if (isDuplicateMessage(msg.id)) {
+    log.info(`[whatsapp-cloud] Ignoring duplicate webhook delivery for ${msg.id}`);
+    return;
+  }
+
   // Access control
   if (config.dmPolicy === "allowlist") {
     const normalized = normalizePhone(msg.from);

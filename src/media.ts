@@ -150,6 +150,66 @@ export function resolveLocalMediaPath(ref: string): string | null {
   return path.resolve(ref);
 }
 
+/** OpenClaw state dir (OPENCLAW_STATE_DIR aware). */
+function resolveStateDir(): string {
+  return (
+    (process.env.OPENCLAW_STATE_DIR && process.env.OPENCLAW_STATE_DIR.trim()) ||
+    path.join(os.homedir(), ".openclaw")
+  );
+}
+
+/**
+ * Directories outbound local media may be read from: OpenClaw's media dirs,
+ * agent workspaces (`workspace`, `workspace-<agent>`), plus configured extras.
+ * Anything else — credentials, config, ~/.npmrc — is refused, so an agent
+ * steered by a user cannot exfiltrate arbitrary files as "attachments".
+ */
+export function resolveAllowedMediaRoots(config: WhatsAppCloudConfig, extraRoots: readonly string[] = []): string[] {
+  const stateDir = resolveStateDir();
+  const roots = [path.join(stateDir, "media"), path.join(stateDir, "delivery-queue-media")];
+  try {
+    for (const entry of fs.readdirSync(stateDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^workspace(-[A-Za-z0-9_.-]+)?$/.test(entry.name)) {
+        roots.push(path.join(stateDir, entry.name));
+      }
+    }
+  } catch {
+    // state dir missing: only explicit roots apply
+  }
+  return [...roots, ...(config.mediaLocalRoots ?? []), ...extraRoots];
+}
+
+/** True when `filePath` (after resolving symlinks) is inside one of `roots`. */
+export function isPathWithinRoots(filePath: string, roots: readonly string[]): boolean {
+  let real: string;
+  try {
+    real = fs.realpathSync(filePath);
+  } catch {
+    return false;
+  }
+  return roots.some((root) => {
+    let realRoot: string;
+    try {
+      realRoot = fs.realpathSync(root);
+    } catch {
+      return false;
+    }
+    const rel = path.relative(realRoot, real);
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  });
+}
+
+export interface OutboundMediaOptions {
+  /** WhatsApp message id to quote. */
+  replyToId?: string | null;
+  /** Send audio as a voice note (needs ogg/opus; Meta falls back to audio otherwise). */
+  asVoice?: boolean;
+  /** Host-authorized reader (OpenClaw outbound context); bypasses the root check. */
+  readFile?: (filePath: string) => Promise<Buffer>;
+  /** Extra host-authorized roots (OpenClaw outbound context). */
+  localRoots?: readonly string[];
+}
+
 /**
  * Send a media reference (URL or local path) to a WhatsApp recipient. Local
  * files are uploaded first and sent by media ID. Images/video/audio go out as
@@ -160,7 +220,8 @@ export async function sendOutboundMedia(
   to: string,
   ref: string,
   caption: string | undefined,
-  log: Logger
+  log: Logger,
+  opts: OutboundMediaOptions = {}
 ): Promise<SendResult> {
   const mimeType = mimeFromPath(ref);
   const kind = mediaKindFromMime(mimeType);
@@ -173,7 +234,16 @@ export async function sendOutboundMedia(
   } else {
     let data: Buffer;
     try {
-      data = fs.readFileSync(localPath);
+      if (opts.readFile) {
+        data = await opts.readFile(localPath);
+      } else {
+        if (!isPathWithinRoots(localPath, resolveAllowedMediaRoots(config, opts.localRoots))) {
+          const error = `Refusing to send local media outside allowed directories: ${localPath}`;
+          log.warn(`[whatsapp-cloud] ${error}`);
+          return { ok: false, error };
+        }
+        data = fs.readFileSync(localPath);
+      }
     } catch (err) {
       const error = `Cannot read local media ${localPath}: ${err instanceof Error ? err.message : String(err)}`;
       log.error(`[whatsapp-cloud] ${error}`);
@@ -193,7 +263,9 @@ export async function sendOutboundMedia(
       // Audio messages do not accept a caption.
       ...(caption && kind !== "audio" ? { caption } : {}),
       ...(kind === "document" ? { filename } : {}),
+      ...(kind === "audio" && opts.asVoice ? { voice: true } : {}),
     },
-    log
+    log,
+    { replyToId: opts.replyToId }
   );
 }

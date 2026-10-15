@@ -32,8 +32,64 @@ function headers(config: WhatsAppCloudConfig): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
+// Retry on transient errors
+// ---------------------------------------------------------------------------
+// Only rate limits and server errors are retried. Network errors are NOT: the
+// request may have reached Meta, and resending would duplicate the message.
+// ---------------------------------------------------------------------------
+
+/** Retry policy; mutable so tests can drop the delay. */
+export const retryPolicy = { maxAttempts: 3, baseDelayMs: 1000 };
+
+const RETRYABLE_HTTP = new Set([429, 500, 502, 503, 504]);
+// 4 / 80007 / 130429: app or account throughput limit; 131056: pair rate limit.
+const RETRYABLE_META_CODES = new Set([4, 80007, 130429, 131056]);
+
+function isRetryable(status: number, err: ApiErrorResponse | undefined): boolean {
+  if (RETRYABLE_HTTP.has(status)) return true;
+  const code = err?.error?.code;
+  return code !== undefined && RETRYABLE_META_CODES.has(code);
+}
+
+/**
+ * fetch with retry on transient HTTP errors. Returns the final response; the
+ * parsed error body is returned alongside when the response is not ok.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: () => RequestInit,
+  log: Logger
+): Promise<{ response: Response; err?: ApiErrorResponse }> {
+  for (let attempt = 1; ; attempt++) {
+    const response = await fetch(url, init());
+    if (response.ok) return { response };
+
+    const err = (await response.json().catch(() => ({}))) as ApiErrorResponse;
+    if (attempt >= retryPolicy.maxAttempts || !isRetryable(response.status, err)) {
+      return { response, err };
+    }
+    const delay = retryPolicy.baseDelayMs * 2 ** (attempt - 1);
+    log.warn(
+      `[whatsapp-cloud] Transient API error (HTTP ${response.status}${err?.error?.code ? `, code ${err.error.code}` : ""}), retry ${attempt}/${retryPolicy.maxAttempts - 1} in ${delay}ms`
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core send function
 // ---------------------------------------------------------------------------
+
+/** Per-send options shared by message senders. */
+export interface SendOptions {
+  /** WhatsApp message id to quote (shown as a reply bubble). */
+  replyToId?: string | null;
+}
+
+/** Add the reply `context` to a message body when quoting a message. */
+function withContext<T extends object>(body: T, opts?: SendOptions): T {
+  return opts?.replyToId ? { ...body, context: { message_id: opts.replyToId } } : body;
+}
 
 async function sendRequest(
   config: WhatsAppCloudConfig,
@@ -43,14 +99,13 @@ async function sendRequest(
   const url = apiUrl(config, `${config.phoneNumberId}/messages`);
 
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: headers(config),
-      body: JSON.stringify(body),
-    });
+    const { response, err } = await fetchWithRetry(
+      url,
+      () => ({ method: "POST", headers: headers(config), body: JSON.stringify(body) }),
+      log
+    );
 
     if (!response.ok) {
-      const err = (await response.json().catch(() => ({}))) as ApiErrorResponse;
       const errorMsg =
         err?.error?.message ?? `HTTP ${response.status} ${response.statusText}`;
       log.error(`[whatsapp-cloud] API error: ${errorMsg}`);
@@ -110,7 +165,8 @@ export async function sendText(
   config: WhatsAppCloudConfig,
   to: string,
   text: string,
-  log: Logger
+  log: Logger,
+  opts?: SendOptions
 ): Promise<SendResult> {
   // Strip the operator-only run-inspection footer before anything else. If the
   // message was ONLY that footer (delivered as its own message), drop it entirely.
@@ -142,7 +198,7 @@ export async function sendText(
   const chunks = splitMessage(text, 4096);
   let lastResult: SendResult = { ok: false, error: "No chunks" };
 
-  for (const chunk of chunks) {
+  for (const [i, chunk] of chunks.entries()) {
     const body: SendTextRequest = {
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -150,7 +206,9 @@ export async function sendText(
       type: "text",
       text: { preview_url: false, body: chunk },
     };
-    lastResult = await sendRequest(config, body as unknown as Record<string, unknown>, log);
+    // Only the first chunk quotes the original message.
+    const withReply = i === 0 ? withContext(body, opts) : body;
+    lastResult = await sendRequest(config, withReply as unknown as Record<string, unknown>, log);
     if (!lastResult.ok) return lastResult;
   }
 
@@ -194,7 +252,8 @@ export async function sendInteractive(
   config: WhatsAppCloudConfig,
   to: string,
   interactive: InteractiveMessage,
-  log: Logger
+  log: Logger,
+  opts?: SendOptions
 ): Promise<SendResult> {
   const body: SendInteractiveRequest = {
     messaging_product: "whatsapp",
@@ -203,7 +262,7 @@ export async function sendInteractive(
     type: "interactive",
     interactive,
   };
-  return sendRequest(config, body as unknown as Record<string, unknown>, log);
+  return sendRequest(config, withContext(body, opts) as unknown as Record<string, unknown>, log);
 }
 
 /**
@@ -242,8 +301,9 @@ export async function sendMedia(
   config: WhatsAppCloudConfig,
   to: string,
   mediaType: "image" | "audio" | "video" | "document",
-  media: { link?: string; id?: string; caption?: string; filename?: string },
-  log: Logger
+  media: { link?: string; id?: string; caption?: string; filename?: string; voice?: boolean },
+  log: Logger,
+  opts?: SendOptions
 ): Promise<SendResult> {
   const body: SendMediaRequest = {
     messaging_product: "whatsapp",
@@ -252,7 +312,7 @@ export async function sendMedia(
     type: mediaType,
     [mediaType]: media,
   };
-  return sendRequest(config, body as unknown as Record<string, unknown>, log);
+  return sendRequest(config, withContext(body, opts) as unknown as Record<string, unknown>, log);
 }
 
 /**
@@ -268,21 +328,27 @@ export async function uploadMedia(
   log: Logger
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const url = apiUrl(config, `${config.phoneNumberId}/media`);
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  form.append("type", mimeType);
-  form.append("file", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
+  const makeForm = () => {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", mimeType);
+    form.append("file", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
+    return form;
+  };
 
   try {
     // No Content-Type header: fetch sets the multipart boundary itself.
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${config.accessToken}` },
-      body: form,
-    });
+    const { response, err } = await fetchWithRetry(
+      url,
+      () => ({
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.accessToken}` },
+        body: makeForm(),
+      }),
+      log
+    );
 
     if (!response.ok) {
-      const err = (await response.json().catch(() => ({}))) as ApiErrorResponse;
       const errorMsg =
         err?.error?.message ?? `HTTP ${response.status} ${response.statusText}`;
       log.error(`[whatsapp-cloud] Media upload error: ${errorMsg}`);

@@ -5,7 +5,7 @@ import type { WhatsAppCloudConfig, WebhookPayload } from "../types.js";
 import { CONFIG_DEFAULTS } from "../types.js";
 
 // We test the webhook server via HTTP to exercise the full stack
-import { startWebhookServer, type ParsedInboundMessage } from "../webhook.js";
+import { startWebhookServer, isDuplicateMessage, resetSeenMessages, type ParsedInboundMessage } from "../webhook.js";
 
 const TEST_PORT = 13100;
 const APP_SECRET = "test_secret_for_webhook";
@@ -181,6 +181,7 @@ describe("Webhook Server", () => {
     receivedMessages = [];
     receivedStatuses = [];
     vi.clearAllMocks();
+    resetSeenMessages();
   });
 
   async function startServer(configOverrides: Partial<WhatsAppCloudConfig> = {}) {
@@ -406,5 +407,72 @@ describe("Webhook Server", () => {
     } finally {
       await stopServer();
     }
+  });
+
+  // --- De-duplication / delivery failures ---
+
+  it("ignores a redelivered webhook for the same message id", async () => {
+    await startServer({ webhookPort: 13190 });
+    try {
+      const payload = makeTextPayload("393491234567", "Hello once");
+      await postWebhook(payload, 13190);
+      await postWebhook(payload, 13190);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(receivedMessages).toHaveLength(1);
+    } finally {
+      await stopServer();
+    }
+  });
+
+  it("warns on failed delivery statuses and passes errors to the handler", async () => {
+    await startServer({ webhookPort: 13191 });
+    try {
+      const payload: WebhookPayload = {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "BUSINESS_ACCOUNT_ID",
+            changes: [
+              {
+                field: "messages",
+                value: {
+                  messaging_product: "whatsapp",
+                  metadata: { display_phone_number: "15550001234", phone_number_id: "111222333" },
+                  statuses: [
+                    {
+                      id: "wamid.out1",
+                      status: "failed",
+                      timestamp: "1700000000",
+                      recipient_id: "393491234567",
+                      errors: [{ code: 131047, title: "Re-engagement message", message: "outside window" }],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      } as WebhookPayload;
+      await postWebhook(payload, 13191);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(receivedStatuses).toEqual([{ id: "wamid.out1", status: "failed", recipientId: "393491234567" }]);
+      expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining("Delivery FAILED for wamid.out1"));
+      expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining("131047 Re-engagement message"));
+    } finally {
+      await stopServer();
+    }
+  });
+});
+
+describe("isDuplicateMessage", () => {
+  beforeEach(() => resetSeenMessages());
+
+  it("flags a repeat within the TTL and allows it again after", () => {
+    expect(isDuplicateMessage("wamid.a", 0)).toBe(false);
+    expect(isDuplicateMessage("wamid.a", 60_000)).toBe(true);
+    expect(isDuplicateMessage("wamid.a", 11 * 60_000)).toBe(false);
+    expect(isDuplicateMessage("wamid.b", 11 * 60_000)).toBe(false);
   });
 });

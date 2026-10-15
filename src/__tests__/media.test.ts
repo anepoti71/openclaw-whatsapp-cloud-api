@@ -112,13 +112,22 @@ describe("saveInboundMedia", () => {
 });
 
 describe("sendOutboundMedia", () => {
-  let tmpDir: string;
+  let stateDir: string;
+  let tmpDir: string; // allowed media dir inside the fake state dir
+  const prevStateDir = process.env.OPENCLAW_STATE_DIR;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-out-"));
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-state-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    tmpDir = path.join(stateDir, "media", "tool-image-generation");
+    fs.mkdirSync(tmpDir, { recursive: true });
   });
-  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  afterEach(() => {
+    if (prevStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = prevStateDir;
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
 
   function sentBody(callIndex: number) {
     return JSON.parse(mockFetch.mock.calls[callIndex][1].body);
@@ -201,6 +210,85 @@ describe("sendOutboundMedia", () => {
 
     expect(result).toEqual({ ok: false, error: "Media upload failed: bad file" });
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses local files outside the allowed media roots", async () => {
+    const secret = path.join(stateDir, "credentials", "token.json");
+    fs.mkdirSync(path.dirname(secret), { recursive: true });
+    fs.writeFileSync(secret, "{}");
+
+    const result = await sendOutboundMedia(makeConfig(), "393491234567", secret, undefined, mockLog);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("outside allowed directories");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a symlink in an allowed dir that points outside", async () => {
+    const outside = path.join(stateDir, "private.txt");
+    fs.writeFileSync(outside, "secret");
+    const link = path.join(tmpDir, "innocent.png");
+    fs.symlinkSync(outside, link);
+
+    const result = await sendOutboundMedia(makeConfig(), "393491234567", link, undefined, mockLog);
+
+    expect(result.ok).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("allows agent workspaces and configured extra roots", async () => {
+    const ws = path.join(stateDir, "workspace-lola");
+    fs.mkdirSync(ws);
+    fs.writeFileSync(path.join(ws, "a.png"), "png");
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "wa-extra-"));
+    fs.writeFileSync(path.join(extra, "b.png"), "png");
+    for (let i = 0; i < 2; i++) {
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ id: `m${i}` }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: `w${i}` }] }) });
+    }
+
+    const a = await sendOutboundMedia(makeConfig(), "393491234567", path.join(ws, "a.png"), undefined, mockLog);
+    const b = await sendOutboundMedia(
+      { ...makeConfig(), mediaLocalRoots: [extra] },
+      "393491234567",
+      path.join(extra, "b.png"),
+      undefined,
+      mockLog
+    );
+    fs.rmSync(extra, { recursive: true, force: true });
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+  });
+
+  it("uses the host-authorized reader when provided", async () => {
+    const readFile = vi.fn(async () => Buffer.from("png"));
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "media-h" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: "wamid.h" }] }) });
+
+    const result = await sendOutboundMedia(makeConfig(), "393491234567", "/anywhere/x.png", undefined, mockLog, { readFile });
+
+    expect(result.ok).toBe(true);
+    expect(readFile).toHaveBeenCalledWith("/anywhere/x.png");
+  });
+
+  it("sends ogg audio as a voice note with reply context", async () => {
+    const file = path.join(tmpDir, "reply.ogg");
+    fs.writeFileSync(file, "ogg");
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "media-v" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: "wamid.v" }] }) });
+
+    await sendOutboundMedia(makeConfig(), "393491234567", file, "ignored caption", mockLog, {
+      asVoice: true,
+      replyToId: "wamid.orig",
+    });
+
+    expect(sentBody(1).type).toBe("audio");
+    expect(sentBody(1).audio).toEqual({ id: "media-v", voice: true });
+    expect(sentBody(1).context).toEqual({ message_id: "wamid.orig" });
   });
 });
 

@@ -6,7 +6,7 @@ const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 // Import after mocking
-import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl, isServiceNotice, stripInspectFooter } from "../api.js";
+import { sendText, sendButtons, sendMedia, markAsRead, getMediaUrl, isServiceNotice, stripInspectFooter, retryPolicy } from "../api.js";
 
 const mockLog = {
   info: vi.fn(),
@@ -392,5 +392,69 @@ describe("getMediaUrl", () => {
 
     const url = await getMediaUrl(config, "bad_id", mockLog);
     expect(url).toBeNull();
+  });
+});
+
+describe("retry on transient errors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    retryPolicy.baseDelayMs = 0;
+  });
+  afterEach(() => {
+    retryPolicy.baseDelayMs = 1000;
+  });
+
+  it("retries a 429 and succeeds", async () => {
+    mockApiError(429, "Rate limited");
+    mockApiSuccess("wamid.after-retry");
+
+    const result = await sendText(makeConfig(), "393491234567", "hi", mockLog);
+
+    expect(result).toEqual({ ok: true, messageId: "wamid.after-retry" });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries Meta pair rate limit (131056) returned as 400", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      json: async () => ({ error: { message: "pair rate limit", type: "OAuthException", code: 131056, fbtrace_id: "t" } }),
+    });
+    mockApiSuccess();
+
+    const result = await sendText(makeConfig(), "393491234567", "hi", mockLog);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after maxAttempts", async () => {
+    mockApiError(503, "Unavailable");
+    mockApiError(503, "Unavailable");
+    mockApiError(503, "Unavailable");
+
+    const result = await sendText(makeConfig(), "393491234567", "hi", mockLog);
+
+    expect(result).toEqual({ ok: false, error: "Unavailable" });
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry permanent errors", async () => {
+    mockApiError(400, "Invalid parameter");
+
+    const result = await sendText(makeConfig(), "393491234567", "hi", mockLog);
+
+    expect(result.ok).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry network errors (request may have reached Meta)", async () => {
+    mockFetch.mockRejectedValueOnce(new Error("ECONNRESET"));
+
+    const result = await sendText(makeConfig(), "393491234567", "hi", mockLog);
+
+    expect(result.ok).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
