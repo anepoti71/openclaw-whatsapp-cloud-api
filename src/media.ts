@@ -14,8 +14,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getMediaUrl, downloadMedia } from "./api.js";
-import type { WhatsAppCloudConfig, Logger } from "./types.js";
+import { fileURLToPath } from "node:url";
+import { getMediaUrl, downloadMedia, sendMedia, uploadMedia } from "./api.js";
+import type { WhatsAppCloudConfig, Logger, SendResult } from "./types.js";
 
 export type MediaKind = "image" | "audio" | "video" | "document";
 
@@ -106,4 +107,93 @@ export async function saveInboundMedia(
     log.error(`[whatsapp-cloud] Failed to save inbound media: ${String(err)}`);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound media handling
+// ---------------------------------------------------------------------------
+// Agents hand the channel either a public URL or a local file path (e.g. a
+// generated image). Meta only accepts `link` for a reachable http(s) URL, so a
+// local path must be uploaded to the Media endpoint and sent by `id`; putting a
+// path in `link` fails with "(#100) Param image.link is not a valid URI".
+// ---------------------------------------------------------------------------
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  mp4: "video/mp4",
+  "3gp": "video/3gpp",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  amr: "audio/amr",
+  pdf: "application/pdf",
+};
+
+/** Guess MIME type from a path or URL extension (octet-stream when unknown). */
+export function mimeFromPath(ref: string): string {
+  const clean = ref.split(/[?#]/)[0] ?? "";
+  const ext = path.extname(clean).slice(1).toLowerCase();
+  return MIME_BY_EXT[ext] ?? "application/octet-stream";
+}
+
+/**
+ * Resolve an outbound media reference to a local file path, or null when it is
+ * a remote http(s) URL that Meta can fetch itself.
+ */
+export function resolveLocalMediaPath(ref: string): string | null {
+  if (/^https?:\/\//i.test(ref)) return null;
+  if (/^file:\/\//i.test(ref)) return fileURLToPath(ref);
+  return path.resolve(ref);
+}
+
+/**
+ * Send a media reference (URL or local path) to a WhatsApp recipient. Local
+ * files are uploaded first and sent by media ID. Images/video/audio go out as
+ * their own type; anything else is sent as a document.
+ */
+export async function sendOutboundMedia(
+  config: WhatsAppCloudConfig,
+  to: string,
+  ref: string,
+  caption: string | undefined,
+  log: Logger
+): Promise<SendResult> {
+  const mimeType = mimeFromPath(ref);
+  const kind = mediaKindFromMime(mimeType);
+  const localPath = resolveLocalMediaPath(ref);
+  const filename = path.basename((localPath ?? ref).split(/[?#]/)[0] ?? "") || "file";
+
+  let media: { link?: string; id?: string };
+  if (localPath === null) {
+    media = { link: ref };
+  } else {
+    let data: Buffer;
+    try {
+      data = fs.readFileSync(localPath);
+    } catch (err) {
+      const error = `Cannot read local media ${localPath}: ${err instanceof Error ? err.message : String(err)}`;
+      log.error(`[whatsapp-cloud] ${error}`);
+      return { ok: false, error };
+    }
+    const upload = await uploadMedia(config, data, mimeType, filename, log);
+    if (!upload.ok) return { ok: false, error: `Media upload failed: ${upload.error}` };
+    media = { id: upload.id };
+  }
+
+  return sendMedia(
+    config,
+    to,
+    kind,
+    {
+      ...media,
+      // Audio messages do not accept a caption.
+      ...(caption && kind !== "audio" ? { caption } : {}),
+      ...(kind === "document" ? { filename } : {}),
+    },
+    log
+  );
 }

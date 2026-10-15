@@ -255,6 +255,50 @@ export async function sendMedia(
   return sendRequest(config, body as unknown as Record<string, unknown>, log);
 }
 
+/**
+ * Upload media bytes to Meta's Media endpoint and return the media ID.
+ * Messages can only reference media by public URL (`link`) or by this ID, so a
+ * local file must be uploaded first.
+ */
+export async function uploadMedia(
+  config: WhatsAppCloudConfig,
+  data: Buffer,
+  mimeType: string,
+  filename: string,
+  log: Logger
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const url = apiUrl(config, `${config.phoneNumberId}/media`);
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType);
+  form.append("file", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
+
+  try {
+    // No Content-Type header: fetch sets the multipart boundary itself.
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const err = (await response.json().catch(() => ({}))) as ApiErrorResponse;
+      const errorMsg =
+        err?.error?.message ?? `HTTP ${response.status} ${response.statusText}`;
+      log.error(`[whatsapp-cloud] Media upload error: ${errorMsg}`);
+      return { ok: false, error: errorMsg };
+    }
+
+    const json = (await response.json()) as { id?: string };
+    if (!json.id) return { ok: false, error: "Media upload returned no id" };
+    return { ok: true, id: json.id };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    log.error(`[whatsapp-cloud] Media upload network error: ${errorMsg}`);
+    return { ok: false, error: errorMsg };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Read receipts
 // ---------------------------------------------------------------------------

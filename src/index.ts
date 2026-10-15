@@ -10,9 +10,9 @@
 // ---------------------------------------------------------------------------
 
 import type { Server } from "node:http";
-import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
+import { sendText, sendTypingIndicator } from "./api.js";
 import { applyToneTag } from "./tone.js";
-import { saveInboundMedia } from "./media.js";
+import { saveInboundMedia, sendOutboundMedia } from "./media.js";
 import { startWebhookServer, handleWebhookRequest } from "./webhook.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
@@ -189,11 +189,11 @@ async function dispatchInbound(
             if (text) await sendText(config, message.from, text, log);
           }
           if (payload.mediaUrl) {
-            await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);
+            await sendOutboundMedia(config, message.from, payload.mediaUrl, undefined, log);
           }
           if (payload.mediaUrls?.length) {
             for (const url of payload.mediaUrls) {
-              await sendMedia(config, message.from, "image", { link: url }, log);
+              await sendOutboundMedia(config, message.from, url, undefined, log);
             }
           }
         },
@@ -516,7 +516,7 @@ const whatsappCloudChannel = {
       }
 
       if (mediaUrl) {
-        const result = await sendMedia(config, to, "image", { link: mediaUrl, caption: text || undefined }, log);
+        const result = await sendOutboundMedia(config, to, mediaUrl, text || undefined, log);
         if (!result.ok) {
           throw new Error(`WhatsApp Cloud API media send failed: ${result.error}`);
         }
@@ -931,10 +931,10 @@ export default plugin;
 // Re-exports
 // ---------------------------------------------------------------------------
 
-export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia } from "./api.js";
+export { sendText, sendTemplate, sendInteractive, sendButtons, sendMedia, uploadMedia } from "./api.js";
 export { markAsRead, sendTypingIndicator, getMediaUrl, downloadMedia, isServiceNotice, stripInspectFooter } from "./api.js";
 export { extractToneTag, applyToneTag, persistTonePreference, clearTonePreference, resolveTonePrefsDir } from "./tone.js";
-export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir } from "./media.js";
+export { saveInboundMedia, mediaKindFromMime, resolveInboundMediaDir, sendOutboundMedia } from "./media.js";
 export { runSetupWizard, validateConfig } from "./setup.js";
 export type { WhatsAppCloudConfig } from "./types.js";
 export type { ParsedInboundMessage, ParsedInboundMessage as InboundMessage } from "./webhook.js";
