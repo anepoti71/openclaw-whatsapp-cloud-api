@@ -21,6 +21,7 @@ import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
 import type { WhatsAppCloudConfig, Logger, SecretRef, SendResult } from "./types.js";
 import { CONFIG_DEFAULTS } from "./types.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
+import { createSimpleChannelSecretContract } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 
 // ---------------------------------------------------------------------------
 // Account resolution types
@@ -359,49 +360,26 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
 }
 
 /**
- * Secret-target registry entries: declare accessToken/appSecret (under
- * channels.whatsapp-cloud) as inline SecretInput fields so OpenClaw's own secret
- * resolver reads a SecretRef, resolves it, and injects the plaintext value into
- * the config snapshot BEFORE the channel reads it. This is the native path:
- * exposed via the channel's `secrets` adapter (ChannelSecretsAdapter). No host
- * SDK import is needed (it is not resolvable from the installed package path);
- * these are plain data objects matching SecretTargetRegistryEntry.
+ * Channel secret contract. Produces BOTH halves the host needs:
+ *  - secretTargetRegistryEntries: declares accessToken/appSecret/verifyToken as
+ *    secret targets so `secrets audit`/`configure`/plan see them.
+ *  - collectRuntimeConfigAssignments: the piece that actually substitutes a
+ *    resolved value for each SecretRef in the config snapshot BEFORE the channel
+ *    starts. Without it the channel starts with unresolved refs (empty access
+ *    token, HMAC disabled, verify token missing → Meta token mismatch).
+ *
+ * `channel-only` mode: the three secrets live at the channel root
+ * (channels.whatsapp-cloud.<field>), not per sub-account. The SDK import
+ * resolves at runtime because the plugin declares `openclaw` as a
+ * peerDependency, which the installer links into the plugin's node_modules.
  */
-const SECRET_TARGET_REGISTRY_ENTRIES = [
-  {
-    id: "whatsapp-cloud.accessToken",
-    targetType: "whatsapp-cloud",
-    configFile: "openclaw.json",
-    pathPattern: "channels.whatsapp-cloud.accessToken",
-    secretShape: "secret_input",
-    expectedResolvedValue: "string",
-    includeInPlan: true,
-    includeInConfigure: true,
-    includeInAudit: true,
-  },
-  {
-    id: "whatsapp-cloud.appSecret",
-    targetType: "whatsapp-cloud",
-    configFile: "openclaw.json",
-    pathPattern: "channels.whatsapp-cloud.appSecret",
-    secretShape: "secret_input",
-    expectedResolvedValue: "string",
-    includeInPlan: true,
-    includeInConfigure: true,
-    includeInAudit: true,
-  },
-  {
-    id: "whatsapp-cloud.verifyToken",
-    targetType: "whatsapp-cloud",
-    configFile: "openclaw.json",
-    pathPattern: "channels.whatsapp-cloud.verifyToken",
-    secretShape: "secret_input",
-    expectedResolvedValue: "string",
-    includeInPlan: true,
-    includeInConfigure: true,
-    includeInAudit: true,
-  },
-] as const;
+const whatsappCloudSecretContract = createSimpleChannelSecretContract({
+  channelKey: "whatsapp-cloud",
+  label: "WhatsApp Cloud API",
+  accountFields: [],
+  channelFields: ["accessToken", "appSecret", "verifyToken"],
+  mode: "channel-only",
+});
 
 /**
  * Kept as a no-op: OpenClaw now resolves SecretRefs natively via the secret
@@ -462,7 +440,8 @@ const whatsappCloudChannel = {
   // resolves SecretRefs natively into the config snapshot before the channel
   // reads them (also surfaces them to `secrets audit`/`configure`).
   secrets: {
-    secretTargetRegistryEntries: SECRET_TARGET_REGISTRY_ENTRIES as unknown as any[],
+    secretTargetRegistryEntries: whatsappCloudSecretContract.secretTargetRegistryEntries as unknown as any[],
+    collectRuntimeConfigAssignments: whatsappCloudSecretContract.collectRuntimeConfigAssignments,
   },
 
   capabilities: {
