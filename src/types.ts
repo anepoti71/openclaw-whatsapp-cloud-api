@@ -25,6 +25,7 @@ export interface WhatsAppCloudConfig {
   accessToken: string;
   /** Resolved app secret (empty until SecretRefs are resolved; see _rawAppSecret). */
   appSecret: string;
+  /** Resolved webhook verify token (empty until SecretRefs are resolved; see _rawVerifyToken). */
   verifyToken: string;
   webhookPort: number;
   webhookPath: string;
@@ -59,6 +60,8 @@ export interface WhatsAppCloudConfig {
   _rawAccessToken?: SecretInput;
   /** Raw appSecret value as configured (string or SecretRef) before resolution. */
   _rawAppSecret?: SecretInput;
+  /** Raw verifyToken value as configured (string or SecretRef) before resolution. */
+  _rawVerifyToken?: SecretInput;
 }
 
 /** Defaults applied when config values are missing */

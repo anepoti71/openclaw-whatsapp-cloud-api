@@ -185,7 +185,9 @@ function handleVerification(
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
 
-  if (mode === "subscribe" && token === config.verifyToken && challenge) {
+  // config.verifyToken must be non-empty: an unresolved SecretRef leaves it ""
+  // and an attacker could otherwise pass hub.verify_token="" to match.
+  if (mode === "subscribe" && config.verifyToken && token === config.verifyToken && challenge) {
     log.info("[whatsapp-cloud] Webhook verification successful");
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end(challenge);

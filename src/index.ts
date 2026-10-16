@@ -328,7 +328,16 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     // value so the resolver can read it.
     accessToken: typeof raw.accessToken === "string" ? raw.accessToken : "",
     appSecret: typeof raw.appSecret === "string" ? raw.appSecret : "",
-    verifyToken: String(raw.verifyToken ?? CONFIG_DEFAULTS.verifyToken!),
+    // verifyToken: plaintext string used as-is; a SecretRef leaves it empty
+    // (resolved later by the native resolver) and stashes the raw value; the
+    // default applies only when the field is entirely unset (never for a
+    // pending SecretRef, which must resolve to its own value).
+    verifyToken:
+      typeof raw.verifyToken === "string"
+        ? raw.verifyToken
+        : raw.verifyToken == null
+          ? CONFIG_DEFAULTS.verifyToken!
+          : "",
     webhookPort: Number(raw.webhookPort ?? CONFIG_DEFAULTS.webhookPort!),
     webhookPath: String(raw.webhookPath ?? CONFIG_DEFAULTS.webhookPath!),
     apiVersion: String(raw.apiVersion ?? CONFIG_DEFAULTS.apiVersion!),
@@ -345,6 +354,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
       : {}),
     _rawAccessToken: raw.accessToken,
     _rawAppSecret: raw.appSecret,
+    _rawVerifyToken: raw.verifyToken,
   };
 }
 
@@ -374,6 +384,17 @@ const SECRET_TARGET_REGISTRY_ENTRIES = [
     targetType: "whatsapp-cloud",
     configFile: "openclaw.json",
     pathPattern: "channels.whatsapp-cloud.appSecret",
+    secretShape: "secret_input",
+    expectedResolvedValue: "string",
+    includeInPlan: true,
+    includeInConfigure: true,
+    includeInAudit: true,
+  },
+  {
+    id: "whatsapp-cloud.verifyToken",
+    targetType: "whatsapp-cloud",
+    configFile: "openclaw.json",
+    pathPattern: "channels.whatsapp-cloud.verifyToken",
     secretShape: "secret_input",
     expectedResolvedValue: "string",
     includeInPlan: true,

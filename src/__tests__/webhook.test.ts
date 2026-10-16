@@ -240,6 +240,21 @@ describe("Webhook Server", () => {
     }
   });
 
+  it("rejects verification when verifyToken is empty (unresolved SecretRef) even with empty token", async () => {
+    await startServer({ webhookPort: 13112, verifyToken: "" });
+    try {
+      const url = new URL("http://localhost:13112/webhook/whatsapp-cloud");
+      url.searchParams.set("hub.mode", "subscribe");
+      url.searchParams.set("hub.verify_token", "");
+      url.searchParams.set("hub.challenge", "challenge_code");
+
+      const res = await fetch(url.toString());
+      expect(res.status).toBe(403);
+    } finally {
+      await stopServer();
+    }
+  });
+
   // --- Message handling ---
 
   it("processes a text message", async () => {
