@@ -34,9 +34,22 @@
         "description": "Meta App Secret for webhook signature verification"
       },
       "verifyToken": {
-        "type": "string",
+        "isSecret": true,
         "description": "Custom token for webhook endpoint verification",
-        "default": "openclaw-wa-cloud-verify"
+        "default": "openclaw-wa-cloud-verify",
+        "anyOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "source": { "type": "string", "enum": ["env", "file", "exec", "store"] },
+              "provider": { "type": "string" },
+              "id": { "type": "string" }
+            },
+            "required": ["source", "provider", "id"],
+            "additionalProperties": false
+          }
+        ]
       },
       "webhookPort": {
         "type": "number",
@@ -97,7 +110,7 @@
     "businessAccountId": { "label": "Business Account ID", "placeholder": "123456789012345" },
     "accessToken": { "label": "Access Token", "sensitive": true },
     "appSecret": { "label": "App Secret", "sensitive": true },
-    "verifyToken": { "label": "Webhook Verify Token" },
+    "verifyToken": { "label": "Webhook Verify Token", "sensitive": true },
     "webhookPort": { "label": "Webhook Port", "placeholder": "3100" },
     "webhookPath": { "label": "Webhook Path", "placeholder": "/webhook/whatsapp-cloud" },
     "apiVersion": { "label": "API Version", "placeholder": "v21.0" },
@@ -163,9 +176,22 @@
             ]
           },
           "verifyToken": {
-            "type": "string",
+            "isSecret": true,
             "description": "Custom token for webhook endpoint verification",
-            "default": "openclaw-wa-cloud-verify"
+            "default": "openclaw-wa-cloud-verify",
+            "anyOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "properties": {
+                  "source": { "type": "string", "enum": ["env", "file", "exec", "store"] },
+                  "provider": { "type": "string" },
+                  "id": { "type": "string" }
+                },
+                "required": ["source", "provider", "id"],
+                "additionalProperties": false
+              }
+            ]
           },
           "webhookPort": {
             "type": "number",
@@ -226,7 +252,7 @@
         "businessAccountId": { "label": "Business Account ID", "placeholder": "123456789012345" },
         "accessToken": { "label": "Access Token", "sensitive": true },
         "appSecret": { "label": "App Secret", "sensitive": true },
-        "verifyToken": { "label": "Webhook Verify Token" },
+        "verifyToken": { "label": "Webhook Verify Token", "sensitive": true },
         "webhookPort": { "label": "Webhook Port", "placeholder": "3100" },
         "webhookPath": { "label": "Webhook Path", "placeholder": "/webhook/whatsapp-cloud" },
         "apiVersion": { "label": "API Version", "placeholder": "v21.0" },
