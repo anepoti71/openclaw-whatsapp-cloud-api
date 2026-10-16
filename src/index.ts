@@ -507,13 +507,16 @@ const whatsappCloudChannel = {
     },
 
     isConfigured: (account: ResolvedWhatsAppCloudAccount): boolean =>
-      Boolean(account.config.accessToken?.trim() && account.config.phoneNumberId?.trim()),
+      hasCredential(account.config.accessToken, account.config._rawAccessToken) &&
+      Boolean(account.config.phoneNumberId?.trim()),
 
     describeAccount: (account: ResolvedWhatsAppCloudAccount) => ({
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(account.config.accessToken?.trim() && account.config.phoneNumberId?.trim()),
+      configured:
+        hasCredential(account.config.accessToken, account.config._rawAccessToken) &&
+        Boolean(account.config.phoneNumberId?.trim()),
       tokenSource: account.tokenSource,
     }),
 
@@ -871,8 +874,10 @@ const whatsappCloudChannel = {
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(account.config.accessToken?.trim() && account.config.phoneNumberId?.trim()),
-      hasAccessToken: Boolean(account.config.accessToken?.trim()),
+      configured:
+        hasCredential(account.config.accessToken, account.config._rawAccessToken) &&
+        Boolean(account.config.phoneNumberId?.trim()),
+      hasAccessToken: hasCredential(account.config.accessToken, account.config._rawAccessToken),
       hasPhoneNumberId: Boolean(account.config.phoneNumberId?.trim()),
       tokenSource: account.tokenSource,
       running: runtime?.running ?? (webhookServer?.listening ?? false),
