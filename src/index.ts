@@ -21,7 +21,7 @@ import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
 import type { WhatsAppCloudConfig, Logger, SecretRef, SendResult } from "./types.js";
 import { CONFIG_DEFAULTS } from "./types.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
-import { createSimpleChannelSecretContract } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
+import { channelSecrets as whatsappCloudSecretContract } from "./secret-contract-api.js";
 
 // ---------------------------------------------------------------------------
 // Account resolution types
@@ -359,27 +359,9 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
   };
 }
 
-/**
- * Channel secret contract. Produces BOTH halves the host needs:
- *  - secretTargetRegistryEntries: declares accessToken/appSecret/verifyToken as
- *    secret targets so `secrets audit`/`configure`/plan see them.
- *  - collectRuntimeConfigAssignments: the piece that actually substitutes a
- *    resolved value for each SecretRef in the config snapshot BEFORE the channel
- *    starts. Without it the channel starts with unresolved refs (empty access
- *    token, HMAC disabled, verify token missing → Meta token mismatch).
- *
- * `channel-only` mode: the three secrets live at the channel root
- * (channels.whatsapp-cloud.<field>), not per sub-account. The SDK import
- * resolves at runtime because the plugin declares `openclaw` as a
- * peerDependency, which the installer links into the plugin's node_modules.
- */
-const whatsappCloudSecretContract = createSimpleChannelSecretContract({
-  channelKey: "whatsapp-cloud",
-  label: "WhatsApp Cloud API",
-  accountFields: [],
-  channelFields: ["accessToken", "appSecret", "verifyToken"],
-  mode: "channel-only",
-});
+// Secret contract lives in ./secret-contract-api so the host can also load it
+// as a standalone `secret-contract-api.js` module (its runtime secret resolver
+// discovers it by filename, not from the in-memory `secrets` block below).
 
 /**
  * Kept as a no-op: OpenClaw now resolves SecretRefs natively via the secret
